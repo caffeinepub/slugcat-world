@@ -1,0 +1,134 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/assets/fonts/JetBrainsMono.woff2") format("woff2");
+  font-display: swap;
+  font-weight: 100 900;
+}
+
+@font-face {
+  font-family: "Bricolage Grotesque";
+  src: url("/assets/fonts/BricolageGrotesque.woff2") format("woff2");
+  font-display: swap;
+  font-weight: 200 800;
+}
+
+:root {
+  --background: 8 0.015 265;
+  --foreground: 88 0.01 265;
+  --card: 12 0.02 265;
+  --card-foreground: 88 0.01 265;
+  --popover: 12 0.02 265;
+  --popover-foreground: 88 0.01 265;
+  --primary: 68 0.14 265;
+  --primary-foreground: 8 0.015 265;
+  --secondary: 20 0.05 265;
+  --secondary-foreground: 78 0.01 265;
+  --muted: 18 0.04 265;
+  --muted-foreground: 55 0.05 265;
+  --accent: 62 0.16 48;
+  --accent-foreground: 8 0.015 265;
+  --destructive: 42 0.22 18;
+  --destructive-foreground: 95 0.01 265;
+  --border: 22 0.04 265;
+  --input: 22 0.04 265;
+  --ring: 68 0.14 265;
+  --radius: 3px;
+  --chart-1: 68 0.14 265;
+  --chart-2: 62 0.16 48;
+  --chart-3: 62 0.15 160;
+  --chart-4: 72 0.1 300;
+  --chart-5: 58 0.2 28;
+  --sidebar: 8 0.015 265;
+  --sidebar-foreground: 88 0.01 265;
+  --sidebar-primary: 68 0.14 265;
+  --sidebar-primary-foreground: 8 0.015 265;
+  --sidebar-accent: 20 0.05 265;
+  --sidebar-accent-foreground: 78 0.01 265;
+  --sidebar-border: 22 0.04 265;
+  --sidebar-ring: 68 0.14 265;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #050508;
+}
+
+body {
+  font-family: "JetBrains Mono", "Courier New", monospace;
+  color: oklch(var(--foreground));
+  background-color: oklch(var(--background));
+}
+
+/* Scanline overlay for atmospheric feel */
+.scanlines::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.08) 2px,
+    rgba(0, 0, 0, 0.08) 4px
+  );
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* Grain texture overlay */
+.grain::before {
+  content: "";
+  position: fixed;
+  inset: -50%;
+  width: 200%;
+  height: 200%;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 100;
+  animation: grain-shift 0.5s steps(2) infinite;
+}
+
+@keyframes grain-shift {
+  0% {
+    transform: translate(0, 0);
+  }
+  25% {
+    transform: translate(-2%, -3%);
+  }
+  50% {
+    transform: translate(3%, 2%);
+  }
+  75% {
+    transform: translate(-1%, 4%);
+  }
+  100% {
+    transform: translate(2%, -1%);
+  }
+}
+
+/* Scrollbar hiding */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: oklch(var(--border));
+  border-radius: 2px;
+}
