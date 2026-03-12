@@ -28,6 +28,15 @@ export interface ItemDef {
   y: number;
 }
 
+/** A single spring-connected body segment for procedural animation */
+export interface BodyChunk {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  r: number; // draw radius
+}
+
 export interface Player {
   x: number;
   y: number;
@@ -51,6 +60,10 @@ export interface Player {
   state: PlayerState;
   grabCooldown: number;
   animTimer: number;
+  /** Procedural body: [0]=head, [1]=upper body, [2]=lower body/hips */
+  bodyChunks: BodyChunk[];
+  /** Procedural tail nodes trailing from lower body */
+  tailNodes: BodyChunk[];
 }
 
 export type PlayerState =

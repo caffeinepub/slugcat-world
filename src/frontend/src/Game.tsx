@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import type {
+  BodyChunk,
   Enemy,
   FoodItem,
   GameState,
@@ -24,6 +25,14 @@ const RAIN_DURATION = 120_000;
 const RAIN_KILL_TIME = 15_000;
 const SLEEP_DURATION = 1_800;
 const FIXED_DT = 1000 / 60;
+
+// Body chunk spring constants
+const CHUNK_SEG_LEN = 7; // distance between body chunks
+const TAIL_SEG_LEN = 6; // distance between tail nodes
+const CHUNK_SPRING = 0.28; // spring stiffness
+const CHUNK_DAMP = 0.78; // velocity damping per frame
+const TAIL_SPRING = 0.32;
+const TAIL_DAMP = 0.75;
 
 // ─── Tile helpers ─────────────────────────────────────────────────────────────
 function getTile(room: Room, c: number, r: number): number {
@@ -178,16 +187,123 @@ function resolveEnemyY(e: Enemy, room: Room, prevY: number): boolean {
       }
     }
   }
-  // Suppress unused prevY warning
   void prevY;
   return grounded;
 }
 
+// ─── Body Chunk Helpers ───────────────────────────────────────────────────────
+
+function makeChunk(x: number, y: number, r: number): BodyChunk {
+  return { x, y, vx: 0, vy: 0, r };
+}
+
+/**
+ * Spring-constrain child to stay within segLen of parent.
+ * Applies spring force, gravity, damping, then enforces hard max distance.
+ */
+function springChunk(
+  child: BodyChunk,
+  parent: BodyChunk,
+  segLen: number,
+  spring: number,
+  damp: number,
+  gravFactor: number,
+) {
+  const dx = child.x - parent.x;
+  const dy = child.y - parent.y;
+  const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+
+  const targetX = parent.x + (dx / dist) * segLen;
+  const targetY = parent.y + (dy / dist) * segLen;
+  child.vx += (targetX - child.x) * spring;
+  child.vy += (targetY - child.y) * spring;
+
+  child.vy += GRAVITY * gravFactor;
+
+  child.vx *= damp;
+  child.vy *= damp;
+
+  child.x += child.vx;
+  child.y += child.vy;
+
+  // Hard constraint — keep within segLen
+  const dx2 = child.x - parent.x;
+  const dy2 = child.y - parent.y;
+  const dist2 = Math.sqrt(dx2 * dx2 + dy2 * dy2) || 0.001;
+  if (dist2 > segLen) {
+    child.x = parent.x + (dx2 / dist2) * segLen;
+    child.y = parent.y + (dy2 / dist2) * segLen;
+  }
+}
+
+function createBodyChunks(hx: number, hy: number): BodyChunk[] {
+  return [
+    makeChunk(hx, hy, 4.5), // head
+    makeChunk(hx - CHUNK_SEG_LEN, hy + 2, 4.0), // upper body
+    makeChunk(hx - CHUNK_SEG_LEN * 2, hy + 4, 3.5), // lower body / hips
+  ];
+}
+
+function createTailNodes(hx: number, hy: number): BodyChunk[] {
+  const nodes: BodyChunk[] = [];
+  for (let i = 0; i < 6; i++) {
+    nodes.push(
+      makeChunk(
+        hx - CHUNK_SEG_LEN * 2 - TAIL_SEG_LEN * (i + 1),
+        hy + 4 + i * 1.5,
+        2.5 - i * 0.25,
+      ),
+    );
+  }
+  return nodes;
+}
+
+function updateBodyChunks(p: Player) {
+  // Head chunk tracks player hitbox center-top
+  p.bodyChunks[0].x = p.x + p.w / 2;
+  p.bodyChunks[0].y = p.y + p.h * 0.25;
+  p.bodyChunks[0].vx = p.vx;
+  p.bodyChunks[0].vy = p.vy;
+
+  for (let i = 1; i < p.bodyChunks.length; i++) {
+    springChunk(
+      p.bodyChunks[i],
+      p.bodyChunks[i - 1],
+      CHUNK_SEG_LEN,
+      CHUNK_SPRING,
+      CHUNK_DAMP,
+      0.25,
+    );
+  }
+
+  const tailRoot = p.bodyChunks[p.bodyChunks.length - 1];
+  springChunk(
+    p.tailNodes[0],
+    tailRoot,
+    TAIL_SEG_LEN,
+    TAIL_SPRING,
+    TAIL_DAMP,
+    0.35,
+  );
+  for (let i = 1; i < p.tailNodes.length; i++) {
+    springChunk(
+      p.tailNodes[i],
+      p.tailNodes[i - 1],
+      TAIL_SEG_LEN,
+      TAIL_SPRING,
+      TAIL_DAMP,
+      0.4,
+    );
+  }
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 function createPlayer(room: Room): Player {
+  const hx = room.spawnX * TS;
+  const hy = room.spawnY * TS;
   return {
-    x: room.spawnX * TS,
-    y: room.spawnY * TS,
+    x: hx,
+    y: hy,
     vx: 0,
     vy: 0,
     w: PW,
@@ -208,6 +324,8 @@ function createPlayer(room: Room): Player {
     state: "idle",
     grabCooldown: 0,
     animTimer: 0,
+    bodyChunks: createBodyChunks(hx + PW / 2, hy + PH * 0.25),
+    tailNodes: createTailNodes(hx + PW / 2, hy + PH * 0.25),
   };
 }
 
@@ -336,7 +454,6 @@ function updatePlayer(gs: GameState) {
   const jumpPressed = up && !gs.prevJump;
   const grabPressed = grab && !gs.prevGrab;
 
-  // Grab nearby entities
   if (grabPressed && p.grabCooldown <= 0) {
     let grabbed = false;
     for (let i = 0; i < gs.enemies.length; i++) {
@@ -373,11 +490,9 @@ function updatePlayer(gs: GameState) {
   }
   gs.items = gs.items.filter((i) => !i.collected);
 
-  // Crouch / drop-through
   p.crouching = down && p.onGround;
   if (down && p.onGround) p.dropThrough = 15;
 
-  // Pole check
   const midCol = Math.floor((p.x + p.w / 2) / TS);
   const topRow = Math.floor(p.y / TS);
   const botRow = Math.floor((p.y + p.h - 1) / TS);
@@ -414,14 +529,13 @@ function updatePlayer(gs: GameState) {
       p.y = Math.max(0, Math.min(p.y, room.rows * TS - p.h));
       p.onGround = false;
       p.state = "climb";
-      // Spawn dust
       if (Math.abs(p.vy) > 0.5 && gs.frame % 8 === 0)
         spawnDust(gs, p.x + p.w / 2, p.y + p.h);
+      updateBodyChunks(p);
       return;
     }
   }
 
-  // Horizontal movement
   if (left && !p.crouching) {
     p.vx = -PLAYER_SPEED;
     p.facing = -1;
@@ -433,13 +547,11 @@ function updatePlayer(gs: GameState) {
     if (Math.abs(p.vx) < 0.1) p.vx = 0;
   }
 
-  // Wall slide
   const slidingLeft = p.wallLeft && left && !p.onGround;
   const slidingRight = p.wallRight && right && !p.onGround;
   p.wallSliding = slidingLeft || slidingRight;
   if (p.wallSliding && p.vy > WALL_SLIDE_MAX) p.vy = WALL_SLIDE_MAX;
 
-  // Jump
   if (jumpPressed) {
     if (p.onGround) {
       p.vy = JUMP_FORCE;
@@ -456,27 +568,21 @@ function updatePlayer(gs: GameState) {
     }
   }
 
-  // Gravity
   p.vy += GRAVITY;
   if (p.vy > MAX_FALL) p.vy = MAX_FALL;
 
-  // Resolve collisions
   const prevY = p.y;
   resolvePlayerX(p, room);
   p.onGround = resolvePlayerY(p, room, prevY);
   detectWalls(p, room);
 
   if (p.onGround) p.jumpsLeft = 1;
-
-  // Footstep dust
   if (p.onGround && Math.abs(p.vx) > 2 && gs.frame % 6 === 0)
     spawnDust(gs, p.x + p.w / 2, p.y + p.h);
 
-  // Clamp
   p.x = Math.max(-p.w, Math.min(p.x, room.cols * TS));
   p.y = Math.max(0, Math.min(p.y, room.rows * TS - p.h));
 
-  // State
   if (p.onGround) {
     if (Math.abs(p.vx) > 0.5) p.state = "run";
     else if (p.crouching) p.state = "crouch";
@@ -492,6 +598,8 @@ function updatePlayer(gs: GameState) {
   p.animTimer++;
   if (p.dropThrough > 0) p.dropThrough--;
   if (p.grabCooldown > 0) p.grabCooldown--;
+
+  updateBodyChunks(p);
 }
 
 function updateEnemies(gs: GameState) {
@@ -509,7 +617,6 @@ function updateEnemies(gs: GameState) {
       else if (e.state === "chase" && dist > 300) e.state = "patrol";
 
       const speed = e.state === "chase" ? 2.4 : 1.0;
-
       if (e.state === "chase") {
         e.vx = dx > 0 ? speed : -speed;
         e.facing = dx > 0 ? 1 : -1;
@@ -535,20 +642,14 @@ function updateEnemies(gs: GameState) {
       resolveEnemyX(e, room);
       e.onGround = resolveEnemyY(e, room, prevY);
 
-      // Turn around on wall hit
       if (e.vx === 0 && e.state === "patrol") {
         const tmp = e.patrolA;
         e.patrolA = e.patrolB;
         e.patrolB = tmp;
         e.facing *= -1;
       }
-
-      // Kill player on contact
-      if (overlaps(p, e) && gs.phase === "playing") {
-        gs.phase = "dead";
-      }
+      if (overlaps(p, e) && gs.phase === "playing") gs.phase = "dead";
     } else {
-      // Batfly
       const dx = p.x - e.x;
       const dy = p.y - e.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
@@ -568,7 +669,6 @@ function updateEnemies(gs: GameState) {
           e.vx = (Math.random() - 0.5) * 2;
           e.vy = (Math.random() - 0.5) * 1.5;
         }
-        // Gentle sine bob
         e.vy += Math.sin(gs.frame * 0.05 + e.id) * 0.05;
       }
 
@@ -577,7 +677,6 @@ function updateEnemies(gs: GameState) {
       e.vx *= 0.94;
       e.vy *= 0.94;
 
-      // Soft bounds
       if (e.x < 20) {
         e.x = 20;
         e.vx = Math.abs(e.vx);
@@ -628,7 +727,6 @@ function spawnDust(gs: GameState, x: number, y: number) {
 }
 
 function updateParticles(gs: GameState) {
-  // Spawn rain
   const spawnCount = gs.rainActive ? 14 : 3;
   for (let i = 0; i < spawnCount; i++) {
     gs.particles.push({
@@ -641,14 +739,12 @@ function updateParticles(gs: GameState) {
       size: 1 + Math.random(),
     });
   }
-
   for (const p of gs.particles) {
     p.x += p.vx;
     p.y += p.vy;
     if (p.type === "rain") p.life -= 0.018;
     else p.life -= 0.04;
   }
-
   gs.particles = gs.particles.filter(
     (p) =>
       p.life > 0 &&
@@ -656,7 +752,6 @@ function updateParticles(gs: GameState) {
       p.x > gs.camera.x - 20 &&
       p.x < gs.camera.x + gs.canvasW + 20,
   );
-
   if (gs.particles.length > 600)
     gs.particles.splice(0, gs.particles.length - 600);
 }
@@ -679,7 +774,6 @@ function update(gs: GameState) {
   gs.frame++;
   const room = gs.rooms[gs.currentRoom];
 
-  // Sleep phase
   if (gs.phase === "sleeping") {
     gs.sleepTimer -= FIXED_DT;
     if (gs.sleepTimer <= 0) {
@@ -687,7 +781,6 @@ function update(gs: GameState) {
         gs.phase = "won";
         return;
       }
-      // Reset cycle
       gs.rainTimer = RAIN_DURATION;
       gs.rainActive = false;
       gs.rainExposure = 0;
@@ -704,11 +797,9 @@ function update(gs: GameState) {
     return;
   }
 
-  // Rain timer
   gs.rainTimer = Math.max(0, gs.rainTimer - FIXED_DT);
   if (gs.rainTimer === 0) gs.rainActive = true;
 
-  // Rain exposure
   const safe = inShelterZone(gs.player, room);
   if (gs.rainActive && !safe) {
     gs.rainExposure += FIXED_DT;
@@ -720,26 +811,19 @@ function update(gs: GameState) {
     gs.rainExposure = Math.max(0, gs.rainExposure - FIXED_DT * 1.5);
   }
 
-  // Player
   updatePlayer(gs);
   if ((gs.phase as string) === "dead") return;
-
-  // Spikes
   checkSpikes(gs);
   if ((gs.phase as string) === "dead") return;
-
-  // Enemies
   updateEnemies(gs);
   if ((gs.phase as string) === "dead") return;
 
-  // Sleep in shelter
   const pressingDown = gs.keys.has("ArrowDown") || gs.keys.has("KeyS");
   if (inShelterZone(gs.player, room) && gs.player.onGround && pressingDown) {
     gs.phase = "sleeping";
     gs.sleepTimer = SLEEP_DURATION;
   }
 
-  // Win condition (last room + shelter area)
   if (
     room.nextRoom === -1 &&
     gs.player.y < 4 * TS &&
@@ -749,7 +833,6 @@ function update(gs: GameState) {
     return;
   }
 
-  // Room transition
   if (
     gs.player.x > room.cols * TS - 10 &&
     room.nextRoom !== -1 &&
@@ -763,10 +846,7 @@ function update(gs: GameState) {
     return;
   }
 
-  // Items float
-  for (const item of gs.items) {
-    item.floatTimer += 0.06;
-  }
+  for (const item of gs.items) item.floatTimer += 0.06;
 
   updateParticles(gs);
   updateCamera(gs);
@@ -811,7 +891,6 @@ function drawTile(
     ctx.fillStyle = "rgba(60,120,240,0.3)";
     ctx.fillRect(sx, sy, TS, 3);
   } else if (type === 5) {
-    // Spikes
     ctx.fillStyle = "#445566";
     for (let i = 0; i < 4; i++) {
       const tx = sx + i * 8 + 4;
@@ -822,7 +901,6 @@ function drawTile(
       ctx.fill();
     }
   } else if (type === 6) {
-    // Shelter
     ctx.fillStyle = "#0a1a0a";
     ctx.fillRect(sx, sy, TS, TS);
     ctx.fillStyle = "#152515";
@@ -833,68 +911,208 @@ function drawTile(
   }
 }
 
-function drawPlayer(ctx: CanvasRenderingContext2D, p: Player, frame: number) {
-  const { x, y, w, h, facing, state, onPole } = p;
-  const bob = state === "idle" ? Math.sin(frame * 0.06) * 1 : 0;
-  const squishY = state === "jump" ? 0.85 : state === "fall" ? 1.1 : 1;
-  const squishX = state === "jump" ? 1.1 : state === "fall" ? 0.9 : 1;
+/**
+ * Draw slugcat using procedural body chunks + tail nodes.
+ * Renders back-to-front: tail → hips → body strip → upper body → neck → head.
+ */
+function drawPlayer(
+  ctx: CanvasRenderingContext2D,
+  p: Player,
+  camX: number,
+  camY: number,
+  _frame: number,
+) {
+  const chunks = p.bodyChunks;
+  const tail = p.tailNodes;
 
+  // Helper: world → screen
+  const sx = (c: BodyChunk) => c.x - camX;
+  const sy = (c: BodyChunk) => c.y - camY;
+
+  const headSX = sx(chunks[0]);
+  const headSY = sy(chunks[0]);
+  const body1SX = sx(chunks[1]);
+  const body1SY = sy(chunks[1]);
+  const body2SX = sx(chunks[2]);
+  const body2SY = sy(chunks[2]);
+
+  const bodyColor = "#f0ead6";
+  const darkBody = "#e0d8c2";
+  const tailColor = "#d8d0bc";
+  const shadow = "rgba(0,0,0,0.22)";
+
+  // ── Tail ──────────────────────────────────────────────────────────────────
+  if (tail.length > 1) {
+    // Shadow
+    ctx.save();
+    ctx.strokeStyle = shadow;
+    ctx.lineWidth = tail[0].r * 2 + 2;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(body2SX + 1, body2SY + 2);
+    for (const t of tail) ctx.lineTo(t.x - camX + 1, t.y - camY + 2);
+    ctx.stroke();
+    ctx.restore();
+
+    // Tapered segments
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    const pts = [
+      { x: body2SX, y: body2SY },
+      ...tail.map((t) => ({ x: t.x - camX, y: t.y - camY })),
+    ];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const t = i / (pts.length - 1);
+      ctx.beginPath();
+      ctx.moveTo(pts[i].x, pts[i].y);
+      ctx.lineTo(pts[i + 1].x, pts[i + 1].y);
+      ctx.strokeStyle = tailColor;
+      ctx.lineWidth = Math.max(0.8, tail[0].r * 2 * (1 - t * 0.85));
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // ── Lower body / hips ────────────────────────────────────────────────────
   ctx.save();
-  ctx.translate(x + w / 2, y + h / 2 + bob);
-  ctx.scale(facing * squishX, squishY);
-
-  // Body shadow
-  ctx.fillStyle = "rgba(0,0,0,0.3)";
+  ctx.fillStyle = shadow;
   ctx.beginPath();
-  ctx.ellipse(2, 3, w / 2 - 1, h / 2 - 1, 0, 0, Math.PI * 2);
+  ctx.ellipse(
+    body2SX + 1,
+    body2SY + 2,
+    chunks[2].r + 1.5,
+    chunks[2].r + 0.5,
+    0,
+    0,
+    Math.PI * 2,
+  );
   ctx.fill();
+  ctx.fillStyle = darkBody;
+  ctx.beginPath();
+  ctx.ellipse(
+    body2SX,
+    body2SY,
+    chunks[2].r + 1,
+    chunks[2].r,
+    0,
+    0,
+    Math.PI * 2,
+  );
+  ctx.fill();
+  ctx.restore();
 
-  // Main body
-  const bodyColor = state === "idle" ? "#f0ead6" : "#e8e0cc";
+  // ── Body connecting strip ─────────────────────────────────────────────────
+  ctx.save();
+  ctx.strokeStyle = bodyColor;
+  ctx.lineWidth = (chunks[1].r + chunks[2].r) * 0.9;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(body1SX, body1SY);
+  ctx.lineTo(body2SX, body2SY);
+  ctx.stroke();
+  ctx.restore();
+
+  // ── Upper body ────────────────────────────────────────────────────────────
+  ctx.save();
+  ctx.fillStyle = shadow;
+  ctx.beginPath();
+  ctx.ellipse(
+    body1SX + 1,
+    body1SY + 2,
+    chunks[1].r + 1.5,
+    chunks[1].r + 0.5,
+    0,
+    0,
+    Math.PI * 2,
+  );
+  ctx.fill();
   ctx.fillStyle = bodyColor;
   ctx.beginPath();
-  ctx.roundRect(-w / 2, -h / 2, w, h, [6]);
+  ctx.ellipse(
+    body1SX,
+    body1SY,
+    chunks[1].r + 1.5,
+    chunks[1].r + 1,
+    0,
+    0,
+    Math.PI * 2,
+  );
+  ctx.fill();
+  ctx.restore();
+
+  // ── Neck connector ────────────────────────────────────────────────────────
+  ctx.save();
+  ctx.strokeStyle = bodyColor;
+  ctx.lineWidth = (chunks[0].r + chunks[1].r) * 0.75;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(headSX, headSY);
+  ctx.lineTo(body1SX, body1SY);
+  ctx.stroke();
+  ctx.restore();
+
+  // ── Head ──────────────────────────────────────────────────────────────────
+  const facing = p.facing;
+
+  // Compute head tilt from body chain angle
+  const hdx = headSX - body1SX;
+  const hdy = headSY - body1SY;
+  const headAngle = Math.atan2(hdy, hdx) - Math.PI / 2;
+
+  ctx.save();
+  ctx.translate(headSX, headSY);
+  ctx.rotate(headAngle);
+
+  // Shadow
+  ctx.fillStyle = shadow;
+  ctx.beginPath();
+  ctx.ellipse(1.5, 1.5, chunks[0].r + 1, chunks[0].r + 0.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Head circle
+  ctx.fillStyle = bodyColor;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, chunks[0].r + 1, chunks[0].r + 0.5, 0, 0, Math.PI * 2);
   ctx.fill();
 
   // Ear nubs
-  if (!onPole) {
-    ctx.fillStyle = "#d8d0bc";
-    ctx.beginPath();
-    ctx.ellipse(-w / 2 + 4, -h / 2 + 2, 3, 4, -0.4, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.ellipse(w / 2 - 4, -h / 2 + 2, 3, 4, 0.4, 0, Math.PI * 2);
-    ctx.fill();
-  }
+  ctx.fillStyle = "#d8d0bc";
+  ctx.beginPath();
+  ctx.ellipse(
+    -(chunks[0].r - 1),
+    -(chunks[0].r - 1),
+    2.5,
+    3.5,
+    -0.4,
+    0,
+    Math.PI * 2,
+  );
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(
+    chunks[0].r - 1,
+    -(chunks[0].r - 1),
+    2.5,
+    3.5,
+    0.4,
+    0,
+    Math.PI * 2,
+  );
+  ctx.fill();
 
-  // Eye
-  const eyeOX = w / 2 - 5;
-  const eyeOY = -h / 2 + 6;
+  // Eye (facing-aware in local head space)
+  const eyeX = facing * (chunks[0].r - 1);
+  const eyeY = -(chunks[0].r - 2);
   ctx.fillStyle = "#1a1a2e";
   ctx.beginPath();
-  ctx.arc(eyeOX, eyeOY, 2.5, 0, Math.PI * 2);
+  ctx.arc(eyeX, eyeY, 2, 0, Math.PI * 2);
   ctx.fill();
-  // Eye shine
   ctx.fillStyle = "rgba(255,255,255,0.7)";
   ctx.beginPath();
-  ctx.arc(eyeOX + 1, eyeOY - 1, 0.8, 0, Math.PI * 2);
+  ctx.arc(eyeX + 0.6, eyeY - 0.6, 0.7, 0, Math.PI * 2);
   ctx.fill();
-
-  // Tail
-  ctx.strokeStyle = "#d8d0bc";
-  ctx.lineWidth = 3;
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.moveTo(-w / 2 + 2, h / 4);
-  ctx.bezierCurveTo(
-    -w / 2 - 6,
-    h / 4 + 4,
-    -w / 2 - 10,
-    h / 2,
-    -w / 2 - 8,
-    h / 2 + 4,
-  );
-  ctx.stroke();
 
   ctx.restore();
 }
@@ -902,38 +1120,30 @@ function drawPlayer(ctx: CanvasRenderingContext2D, p: Player, frame: number) {
 function drawLizard(ctx: CanvasRenderingContext2D, e: Enemy) {
   const { x, y, w, h, facing, animTimer, state } = e;
   const walkBob = e.onGround ? Math.sin(animTimer * 0.18) * 1.5 : 0;
-
   ctx.save();
   ctx.translate(x + w / 2, y + h / 2 + walkBob);
   ctx.scale(facing, 1);
 
-  // Shadow
   ctx.fillStyle = "rgba(0,0,0,0.25)";
   ctx.beginPath();
   ctx.ellipse(2, 3, w / 2, h / 2 - 2, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // Body
   const bodyG = state === "chase" ? "#5aba5a" : "#4a9a4a";
   ctx.fillStyle = bodyG;
   ctx.beginPath();
   ctx.ellipse(0, 0, w / 2, h / 2, 0, 0, Math.PI * 2);
   ctx.fill();
-
-  // Underbelly
   ctx.fillStyle = "#6aaa6a";
   ctx.beginPath();
   ctx.ellipse(2, 2, w / 2 - 6, h / 2 - 4, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // Head
   const headX = w / 2 - 2;
   ctx.fillStyle = bodyG;
   ctx.beginPath();
   ctx.ellipse(headX, -2, 8, 6, 0, 0, Math.PI * 2);
   ctx.fill();
-
-  // Eye
   ctx.fillStyle = "#1a1a1a";
   ctx.beginPath();
   ctx.arc(headX + 4, -4, 2, 0, Math.PI * 2);
@@ -943,7 +1153,6 @@ function drawLizard(ctx: CanvasRenderingContext2D, e: Enemy) {
   ctx.arc(headX + 4, -4, 0.8, 0, Math.PI * 2);
   ctx.fill();
 
-  // Tail
   ctx.strokeStyle = "#3a7a3a";
   ctx.lineWidth = 3;
   ctx.lineCap = "round";
@@ -952,7 +1161,6 @@ function drawLizard(ctx: CanvasRenderingContext2D, e: Enemy) {
   ctx.bezierCurveTo(-w / 2 - 8, 4, -w / 2 - 14, 0, -w / 2 - 18, -4);
   ctx.stroke();
 
-  // Legs (walking animation)
   ctx.strokeStyle = "#3a7a3a";
   ctx.lineWidth = 2;
   const legAnim = Math.sin(animTimer * 0.2) * 4;
@@ -964,18 +1172,15 @@ function drawLizard(ctx: CanvasRenderingContext2D, e: Enemy) {
   ctx.moveTo(4, h / 2 - 2);
   ctx.lineTo(4 - legAnim, h / 2 + 5);
   ctx.stroke();
-
   ctx.restore();
 }
 
 function drawBatfly(ctx: CanvasRenderingContext2D, e: Enemy) {
   const { x, y, animTimer } = e;
   const flapAngle = Math.sin(animTimer * 0.35) * 0.5;
-
   ctx.save();
   ctx.translate(x + 5, y + 5);
 
-  // Wings
   ctx.fillStyle = "rgba(80,100,160,0.7)";
   ctx.save();
   ctx.rotate(flapAngle);
@@ -990,19 +1195,16 @@ function drawBatfly(ctx: CanvasRenderingContext2D, e: Enemy) {
   ctx.fill();
   ctx.restore();
 
-  // Body
   ctx.fillStyle = "#303050";
   ctx.beginPath();
   ctx.ellipse(0, 0, 4, 4, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // Eyes
   ctx.fillStyle = "#ff6644";
   ctx.beginPath();
   ctx.arc(-1.5, -1, 1, 0, Math.PI * 2);
   ctx.arc(1.5, -1, 1, 0, Math.PI * 2);
   ctx.fill();
-
   ctx.restore();
 }
 
@@ -1011,7 +1213,6 @@ function drawFoodItem(ctx: CanvasRenderingContext2D, item: FoodItem) {
   const cx = item.x + item.w / 2;
   const cy = item.y + item.h / 2 + floatY;
 
-  // Glow
   const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, 12);
   grd.addColorStop(0, "rgba(200,220,100,0.3)");
   grd.addColorStop(1, "rgba(200,220,100,0)");
@@ -1020,7 +1221,6 @@ function drawFoodItem(ctx: CanvasRenderingContext2D, item: FoodItem) {
   ctx.arc(cx, cy, 12, 0, Math.PI * 2);
   ctx.fill();
 
-  // Fruit body
   ctx.fillStyle = "#c8dc50";
   ctx.beginPath();
   ctx.arc(cx, cy, 6, 0, Math.PI * 2);
@@ -1044,7 +1244,6 @@ function drawKarmaSymbol(
   ctx.arc(x, y, r, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Petals
   for (let i = 0; i < karma; i++) {
     const angle = (i / Math.max(karma, 1)) * Math.PI * 2 - Math.PI / 2;
     const px = x + Math.cos(angle) * r * 0.55;
@@ -1055,7 +1254,6 @@ function drawKarmaSymbol(
     ctx.fill();
   }
 
-  // Center dot
   ctx.fillStyle = "rgba(200,200,240,0.9)";
   ctx.beginPath();
   ctx.arc(x, y, 2, 0, Math.PI * 2);
@@ -1072,12 +1270,10 @@ function drawHUD(
   ctx.font = '14px "JetBrains Mono", monospace';
   ctx.textBaseline = "middle";
 
-  // ── Karma symbol (top-left)
   drawKarmaSymbol(ctx, 28, 28, p.karma);
   ctx.fillStyle = "rgba(140,140,180,0.7)";
   ctx.fillText("KARMA", 46, 28);
 
-  // ── Hunger pips
   const pipY = 58;
   for (let i = 0; i < 4; i++) {
     const px = 22 + i * 22;
@@ -1096,7 +1292,6 @@ function drawHUD(
   ctx.fillStyle = "rgba(140,120,80,0.6)";
   ctx.fillText("FOOD", 112, pipY);
 
-  // ── Rain timer (top-right)
   const secs = gs.rainTimer / 1000;
   const mins = Math.floor(secs / 60);
   const sec = Math.floor(secs % 60);
@@ -1113,7 +1308,6 @@ function drawHUD(
   ctx.fillText(`☁ ${timerText}`, w - 16, 28);
   ctx.textAlign = "left";
 
-  // ── Rain exposure warning
   if (gs.rainActive && gs.rainExposure > 0) {
     const pct = gs.rainExposure / RAIN_KILL_TIME;
     ctx.fillStyle = `rgba(255,60,60,${0.3 + pct * 0.5})`;
@@ -1125,7 +1319,6 @@ function drawHUD(
     ctx.textAlign = "left";
   }
 
-  // ── Shelter safe indicator
   if (inShelterZone(p, gs.rooms[gs.currentRoom])) {
     ctx.fillStyle = "rgba(60,180,80,0.7)";
     ctx.font = '13px "JetBrains Mono", monospace';
@@ -1134,7 +1327,6 @@ function drawHUD(
     ctx.textAlign = "left";
   }
 
-  // ── Sleep animation
   if (gs.phase === "sleeping") {
     const alpha = Math.min(
       1,
@@ -1150,7 +1342,6 @@ function drawHUD(
     ctx.textAlign = "left";
   }
 
-  // ── Grab hint
   if (!p.hasGrabbed) {
     ctx.fillStyle = "rgba(140,140,180,0.5)";
     ctx.font = '12px "JetBrains Mono", monospace';
@@ -1159,7 +1350,6 @@ function drawHUD(
     ctx.textAlign = "left";
   }
 
-  // ── Room name (top-center)
   ctx.fillStyle = "rgba(120,120,160,0.5)";
   ctx.font = '11px "JetBrains Mono", monospace';
   ctx.textAlign = "center";
@@ -1175,14 +1365,12 @@ function render(canvas: HTMLCanvasElement, gs: GameState) {
   const camY = Math.round(gs.camera.y);
   const room = gs.rooms[gs.currentRoom];
 
-  // ── Background gradient
   const bgGrd = ctx.createLinearGradient(0, 0, 0, H);
   bgGrd.addColorStop(0, "#06060d");
   bgGrd.addColorStop(1, "#0c0c18");
   ctx.fillStyle = bgGrd;
   ctx.fillRect(0, 0, W, H);
 
-  // ── Background stars/dust
   ctx.fillStyle = "rgba(150,150,200,0.15)";
   for (let i = 0; i < 40; i++) {
     const sx = (((i * 137 + camX * 0.05) % W) + W) % W;
@@ -1190,41 +1378,29 @@ function render(canvas: HTMLCanvasElement, gs: GameState) {
     ctx.fillRect(sx, sy, 1, 1);
   }
 
-  // ── Tiles
   const startCol = Math.max(0, Math.floor(camX / TS) - 1);
   const endCol = Math.min(room.cols, Math.ceil((camX + W) / TS) + 1);
   const startRow = Math.max(0, Math.floor(camY / TS) - 1);
   const endRow = Math.min(room.rows, Math.ceil((camY + H) / TS) + 1);
 
-  for (let r = startRow; r < endRow; r++) {
+  for (let r = startRow; r < endRow; r++)
     for (let c = startCol; c < endCol; c++) {
       const t = getTile(room, c, r);
       if (t !== 0) drawTile(ctx, t, c * TS - camX, r * TS - camY);
     }
-  }
 
-  // ── Food items
-  for (const item of gs.items) {
+  for (const item of gs.items)
     drawFoodItem(ctx, { ...item, x: item.x - camX, y: item.y - camY });
-  }
 
-  // ── Enemies
   for (const e of gs.enemies) {
-    if (e.type === "lizard") {
+    if (e.type === "lizard")
       drawLizard(ctx, { ...e, x: e.x - camX, y: e.y - camY });
-    } else {
-      drawBatfly(ctx, { ...e, x: e.x - camX, y: e.y - camY });
-    }
+    else drawBatfly(ctx, { ...e, x: e.x - camX, y: e.y - camY });
   }
 
-  // ── Player
-  drawPlayer(
-    ctx,
-    { ...gs.player, x: gs.player.x - camX, y: gs.player.y - camY },
-    gs.frame,
-  );
+  // Procedural slugcat (camera offset passed directly)
+  drawPlayer(ctx, gs.player, camX, camY, gs.frame);
 
-  // ── Particles
   for (const p of gs.particles) {
     const sx = p.x - camX;
     const sy = p.y - camY;
@@ -1243,20 +1419,17 @@ function render(canvas: HTMLCanvasElement, gs: GameState) {
     }
   }
 
-  // ── Rain overlay
   if (gs.rainActive) {
     const intensity = Math.min(gs.rainExposure / RAIN_KILL_TIME, 1);
     ctx.fillStyle = `rgba(10,20,60,${0.25 + intensity * 0.3})`;
     ctx.fillRect(0, 0, W, H);
   }
 
-  // ── Scanlines
   for (let sy = 0; sy < H; sy += 4) {
     ctx.fillStyle = "rgba(0,0,0,0.07)";
     ctx.fillRect(0, sy, W, 2);
   }
 
-  // ── HUD
   drawHUD(ctx, gs, W, H);
 }
 
