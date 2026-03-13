@@ -340,49 +340,69 @@ function updateLimbNodes(p: Player) {
   const limbs = p.limbNodes;
   if (!limbs || limbs.length < 4) return;
 
-  const upperBody = p.bodyChunks[1]; // front legs attach here
-  const hips = p.bodyChunks[2]; // back legs attach here
+  const upperBody = p.bodyChunks[1]; // arms attach here
+  const hips = p.bodyChunks[2]; // legs attach here
 
   const attachPoints = [
-    { x: upperBody.x - 3, y: upperBody.y + 3 }, // frontLeft
-    { x: upperBody.x + 3, y: upperBody.y + 3 }, // frontRight
-    { x: hips.x - 3, y: hips.y + 3 }, // backLeft
-    { x: hips.x + 3, y: hips.y + 3 }, // backRight
+    { x: upperBody.x - 3, y: upperBody.y + 2 }, // armLeft  [0]
+    { x: upperBody.x + 3, y: upperBody.y + 2 }, // armRight [1]
+    { x: hips.x - 3, y: hips.y + 2 }, // legLeft  [2]
+    { x: hips.x + 3, y: hips.y + 2 }, // legRight [3]
   ];
 
   const legLength = 12;
-  const stride = 10;
+  const stride = 9;
   const facing = p.facing;
+
+  // Walk cycle phase — only advances while moving on ground
+  const isMoving = p.onGround && Math.abs(p.vx) > 0.3;
+  const walkPhase = p.animTimer * 0.22;
 
   for (let i = 0; i < 4; i++) {
     const limb = limbs[i];
     const attach = attachPoints[i];
-    const isFront = i < 2;
+    const isArm = i < 2; // [0,1] = arms
     const isLeft = i % 2 === 0;
     const lateralSign = isLeft ? -1 : 1;
+    // Left arm and right leg step together; right arm and left leg step together
+    // Phase offset: arm swings opposite to same-side leg
+    const phaseOffset = isLeft ? 0 : Math.PI;
+    const phase = isArm
+      ? walkPhase + phaseOffset + Math.PI
+      : walkPhase + phaseOffset;
+    const swingAmt = isMoving ? (isArm ? stride * 0.45 : stride * 0.6) : 0;
 
     let targetX: number;
     let targetY: number;
 
     if (p.onGround) {
-      // Stride offset: front legs step forward, back legs step backward
-      const strideDir = isFront ? facing : -facing;
-      targetX = attach.x + strideDir * stride * 0.5 + lateralSign * 2;
-      targetY = p.y + p.h + 2; // rest on ground
+      // Alternating stride
+      const stepFwd = Math.sin(phase) * swingAmt * facing;
+      targetX = attach.x + stepFwd + lateralSign * 2;
+      if (isArm) {
+        // Arms reach forward/backward at mid-body height
+        targetY =
+          attach.y +
+          legLength * 0.55 +
+          Math.max(0, Math.sin(phase + Math.PI * 0.5)) * 2;
+      } else {
+        // Legs step on ground, lift slightly mid-stride
+        targetY = p.y + p.h + 1 - Math.max(0, Math.sin(phase)) * 3;
+      }
     } else if (p.onPole) {
-      // Grip the pole: spread legs around attach
+      // Grip the pole
       targetX = attach.x + lateralSign * 5;
       targetY = attach.y + legLength * 0.7;
     } else {
-      // In air: legs dangle below attach, swing with velocity
+      // In air: dangle and swing with velocity
       const swingX = p.vx * 0.4;
       targetX = attach.x + lateralSign * 3 + swingX;
       targetY = attach.y + legLength + Math.abs(p.vy) * 0.2;
     }
 
     // Spring foot toward target
-    const springK = p.onGround ? 0.18 : 0.1;
-    const dampK = p.onGround ? 0.65 : 0.75;
+    const springK = p.onGround ? 0.2 : 0.1;
+    const dampK = p.onGround ? 0.62 : 0.75;
     const gravF = p.onGround ? 0.0 : 0.3;
 
     limb.vx += (targetX - limb.x) * springK;
@@ -1493,34 +1513,32 @@ function drawLizard(ctx: CanvasRenderingContext2D, e: Enemy) {
   ctx.translate(x + w / 2, y + h / 2 + walkBob);
   ctx.scale(facing, 1);
 
-  // Walk animation: alternating stride for legs (phase 0 and PI), arms counter-swing
+  // Walk animation: all 4 legs on the ground, alternating diagonal pairs
   const legPhase = animTimer * 0.22;
   const legSwing = e.onGround ? 5 : 3;
-  const armSwing = e.onGround ? 4 : 2;
 
-  // Leg positions: lower body, stride forward/backward alternating
-  const legLY = h / 2 - 2; // leg attach Y (lower body)
-  const legLXL = -5; // left leg attach X
-  const legLXR = 5; // right leg attach X
+  // Back legs: attach near rear of body
+  const bLegAY = h / 2 - 3;
+  const bLegAXL = -6;
+  const bLegAXR = 6;
+  const bFootL_X = bLegAXL + Math.sin(legPhase) * legSwing;
+  const bFootL_Y = h / 2 + 8 + Math.max(0, -Math.sin(legPhase)) * 3;
+  const bFootR_X = bLegAXR - Math.sin(legPhase) * legSwing;
+  const bFootR_Y = h / 2 + 8 + Math.max(0, Math.sin(legPhase)) * 3;
 
-  const legFootL_X = legLXL + Math.sin(legPhase) * legSwing;
-  const legFootL_Y = h / 2 + 7 + Math.max(0, -Math.sin(legPhase)) * 3;
-  const legFootR_X = legLXR - Math.sin(legPhase) * legSwing;
-  const legFootR_Y = h / 2 + 7 + Math.max(0, Math.sin(legPhase)) * 3;
-
-  // Arm positions: upper body, arms swing opposite to legs
-  const armAY = -h / 2 + 4; // arm attach Y (upper body)
-  const armAXL = -4;
-  const armAXR = 4;
-
-  const armFootL_X = armAXL - Math.sin(legPhase) * armSwing;
-  const armFootL_Y = 2 + Math.cos(legPhase) * armSwing * 0.5;
-  const armFootR_X = armAXR + Math.sin(legPhase) * armSwing;
-  const armFootR_Y = 2 - Math.cos(legPhase) * armSwing * 0.5;
+  // Front legs: attach near front of body, stride opposite to back legs
+  const fLegAY = -h / 2 + 5;
+  const fLegAXL = -4;
+  const fLegAXR = 4;
+  // Front legs phase-shifted by PI so diagonal pairs move together
+  const fFootL_X = fLegAXL - Math.sin(legPhase) * legSwing;
+  const fFootL_Y = h / 2 + 6 + Math.max(0, Math.sin(legPhase)) * 3;
+  const fFootR_X = fLegAXR + Math.sin(legPhase) * legSwing;
+  const fFootR_Y = h / 2 + 6 + Math.max(0, -Math.sin(legPhase)) * 3;
 
   // ── Back legs (drawn behind body) ─────────────────────────────────────────
-  drawLimb2(legLXL - 1, legLY, legFootL_X - 1, legFootL_Y, 1, 1.5);
-  drawLimb2(legLXR + 1, legLY, legFootR_X + 1, legFootR_Y, -1, 1.5);
+  drawLimb2(bLegAXL - 1, bLegAY, bFootL_X - 1, bFootL_Y, 1, 1.5);
+  drawLimb2(bLegAXR + 1, bLegAY, bFootR_X + 1, bFootR_Y, -1, 1.5);
 
   // ── Shadow ────────────────────────────────────────────────────────────────
   ctx.fillStyle = "rgba(0,0,0,0.25)";
@@ -1583,9 +1601,9 @@ function drawLizard(ctx: CanvasRenderingContext2D, e: Enemy) {
   ctx.arc(headX + 4, -4, 0.8, 0, Math.PI * 2);
   ctx.fill();
 
-  // ── Front arms (drawn over body) ──────────────────────────────────────────
-  drawLimb2(armAXL, armAY, armFootL_X, armFootL_Y, -1, 1.5);
-  drawLimb2(armAXR, armAY, armFootR_X, armFootR_Y, 1, 1.5);
+  // ── Front legs (drawn over body) ──────────────────────────────────────────
+  drawLimb2(fLegAXL, fLegAY, fFootL_X, fFootL_Y, -1, 1.5);
+  drawLimb2(fLegAXR, fLegAY, fFootR_X, fFootR_Y, 1, 1.5);
 
   ctx.restore();
 }
