@@ -53,7 +53,7 @@ export function parseModRoom(
     spawnX: number;
     spawnY: number;
     enemies?: Array<{ type: "lizard" | "batfly"; x: number; y: number }>;
-    items?: Array<{ type: "food"; x: number; y: number }>;
+    items?: Array<{ type: "food" | "spear"; x: number; y: number }>;
   },
   roomIndex: number,
 ): Room {
@@ -73,7 +73,7 @@ export function parseModRoom(
       y: e.y,
     })),
     items: (level.items ?? []).map((i) => ({
-      type: i.type as "food",
+      type: i.type as "food" | "spear",
       x: i.x,
       y: i.y,
     })),
@@ -123,6 +123,8 @@ function createRoom0(): Room {
     items: [
       { type: "food", x: 8, y: 16 },
       { type: "food", x: 16, y: 16 },
+      { type: "spear", x: 5, y: 16 },
+      { type: "spear", x: 20, y: 16 },
     ],
     nextRoom: 1,
     prevRoom: -1,
@@ -169,11 +171,14 @@ function createRoom1(): Room {
     enemies: [
       { type: "lizard", x: 5, y: 17 },
       { type: "lizard", x: 20, y: 17 },
+      { type: "lizard", x: 35, y: 17 },
       { type: "batfly", x: 12, y: 7 },
     ],
     items: [
       { type: "food", x: 13, y: 17 },
       { type: "food", x: 28, y: 17 },
+      { type: "spear", x: 8, y: 17 },
+      { type: "spear", x: 30, y: 17 },
     ],
     nextRoom: 2,
     prevRoom: 0,
@@ -223,9 +228,13 @@ function createRoom2(): Room {
     spawnY: 23,
     enemies: [
       { type: "lizard", x: 5, y: 23 },
+      { type: "lizard", x: 20, y: 23 },
       { type: "batfly", x: 20, y: 10 },
     ],
-    items: [{ type: "food", x: 8, y: 23 }],
+    items: [
+      { type: "food", x: 8, y: 23 },
+      { type: "spear", x: 3, y: 23 },
+    ],
     nextRoom: -1,
     prevRoom: 1,
     shelterArea: { x: 15 * TS, xMax: 28 * TS },

@@ -7,6 +7,7 @@ import type {
   Particle,
   Player,
   Room,
+  Spear,
 } from "./GameTypes";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -169,8 +170,7 @@ function resolveEnemyY(e: Enemy, room: Room, prevY: number): boolean {
   if (e.vy >= 0) {
     const bc = Math.floor((e.y + e.h - 1) / TS);
     for (let c = lc; c <= rc; c++) {
-      const tile = getTile(room, c, bc);
-      if (isSolid(tile) || tile === 2) {
+      if (isSolid(getTile(room, c, bc))) {
         e.y = bc * TS - e.h;
         e.vy = 0;
         grounded = true;
@@ -187,16 +187,24 @@ function resolveEnemyY(e: Enemy, room: Room, prevY: number): boolean {
       }
     }
   }
-  void prevY;
+  if (!grounded) {
+    // Check platform tiles too
+    const bc = Math.floor((e.y + e.h - 1) / TS);
+    const prevBot = prevY + e.h;
+    const platTop = bc * TS;
+    for (let c = lc; c <= rc; c++) {
+      if (getTile(room, c, bc) === 2 && prevBot <= platTop + 4) {
+        e.y = platTop - e.h;
+        e.vy = 0;
+        grounded = true;
+        break;
+      }
+    }
+  }
   return grounded;
 }
 
-// ─── Body Chunk Helpers ───────────────────────────────────────────────────────
-
-function makeChunk(x: number, y: number, r: number): BodyChunk {
-  return { x, y, vx: 0, vy: 0, r };
-}
-
+// ─── Spring physics ───────────────────────────────────────────────────────────
 /**
  * Spring-constrain child to stay within segLen of parent.
  * Applies spring force, gravity, damping, then enforces hard max distance.
@@ -236,6 +244,10 @@ function springChunk(
   }
 }
 
+function makeChunk(x: number, y: number, r: number): BodyChunk {
+  return { x, y, vx: 0, vy: 0, r };
+}
+
 function createBodyChunks(hx: number, hy: number): BodyChunk[] {
   return [
     makeChunk(hx, hy, 4.5), // head
@@ -258,6 +270,16 @@ function createTailNodes(hx: number, hy: number): BodyChunk[] {
   return nodes;
 }
 
+function createLimbNodes(hx: number, hy: number): BodyChunk[] {
+  // [frontLeft, frontRight, backLeft, backRight]
+  return [
+    makeChunk(hx - 3, hy + 12, 1.5), // frontLeft
+    makeChunk(hx + 3, hy + 12, 1.5), // frontRight
+    makeChunk(hx - 3 - CHUNK_SEG_LEN * 2, hy + 12, 1.5), // backLeft
+    makeChunk(hx + 3 - CHUNK_SEG_LEN * 2, hy + 12, 1.5), // backRight
+  ];
+}
+
 function updateBodyChunks(p: Player) {
   // Head chunk tracks player hitbox center-top
   p.bodyChunks[0].x = p.x + p.w / 2;
@@ -277,23 +299,109 @@ function updateBodyChunks(p: Player) {
   }
 
   const tailRoot = p.bodyChunks[p.bodyChunks.length - 1];
+
+  // Tail physics: on ground the tail rests; in air it hangs/swings
+  const tailGrav = p.onGround ? 0.15 : 0.45;
   springChunk(
     p.tailNodes[0],
     tailRoot,
     TAIL_SEG_LEN,
     TAIL_SPRING,
     TAIL_DAMP,
-    0.35,
+    tailGrav,
   );
   for (let i = 1; i < p.tailNodes.length; i++) {
+    const nodeGrav = p.onGround ? 0.1 : 0.4 + i * 0.05;
     springChunk(
       p.tailNodes[i],
       p.tailNodes[i - 1],
       TAIL_SEG_LEN,
       TAIL_SPRING,
       TAIL_DAMP,
-      0.4,
+      nodeGrav,
     );
+  }
+
+  // Ground-clamp tail: prevent tail from sinking below floor when on ground
+  if (p.onGround) {
+    const floorY = p.y + p.h;
+    for (const node of p.tailNodes) {
+      if (node.y > floorY) {
+        node.y = floorY;
+        node.vy = Math.min(node.vy, 0);
+      }
+    }
+  }
+
+  updateLimbNodes(p);
+}
+
+function updateLimbNodes(p: Player) {
+  const limbs = p.limbNodes;
+  if (!limbs || limbs.length < 4) return;
+
+  const upperBody = p.bodyChunks[1]; // front legs attach here
+  const hips = p.bodyChunks[2]; // back legs attach here
+
+  const attachPoints = [
+    { x: upperBody.x - 3, y: upperBody.y + 3 }, // frontLeft
+    { x: upperBody.x + 3, y: upperBody.y + 3 }, // frontRight
+    { x: hips.x - 3, y: hips.y + 3 }, // backLeft
+    { x: hips.x + 3, y: hips.y + 3 }, // backRight
+  ];
+
+  const legLength = 12;
+  const stride = 10;
+  const facing = p.facing;
+
+  for (let i = 0; i < 4; i++) {
+    const limb = limbs[i];
+    const attach = attachPoints[i];
+    const isFront = i < 2;
+    const isLeft = i % 2 === 0;
+    const lateralSign = isLeft ? -1 : 1;
+
+    let targetX: number;
+    let targetY: number;
+
+    if (p.onGround) {
+      // Stride offset: front legs step forward, back legs step backward
+      const strideDir = isFront ? facing : -facing;
+      targetX = attach.x + strideDir * stride * 0.5 + lateralSign * 2;
+      targetY = p.y + p.h + 2; // rest on ground
+    } else if (p.onPole) {
+      // Grip the pole: spread legs around attach
+      targetX = attach.x + lateralSign * 5;
+      targetY = attach.y + legLength * 0.7;
+    } else {
+      // In air: legs dangle below attach, swing with velocity
+      const swingX = p.vx * 0.4;
+      targetX = attach.x + lateralSign * 3 + swingX;
+      targetY = attach.y + legLength + Math.abs(p.vy) * 0.2;
+    }
+
+    // Spring foot toward target
+    const springK = p.onGround ? 0.18 : 0.1;
+    const dampK = p.onGround ? 0.65 : 0.75;
+    const gravF = p.onGround ? 0.0 : 0.3;
+
+    limb.vx += (targetX - limb.x) * springK;
+    limb.vy += (targetY - limb.y) * springK;
+    limb.vy += GRAVITY * gravF;
+    limb.vx *= dampK;
+    limb.vy *= dampK;
+    limb.x += limb.vx;
+    limb.y += limb.vy;
+
+    // Clamp max limb reach
+    const maxReach = legLength + 6;
+    const dx = limb.x - attach.x;
+    const dy = limb.y - attach.y;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+    if (dist > maxReach) {
+      limb.x = attach.x + (dx / dist) * maxReach;
+      limb.y = attach.y + (dy / dist) * maxReach;
+    }
   }
 }
 
@@ -326,6 +434,9 @@ function createPlayer(room: Room): Player {
     animTimer: 0,
     bodyChunks: createBodyChunks(hx + PW / 2, hy + PH * 0.25),
     tailNodes: createTailNodes(hx + PW / 2, hy + PH * 0.25),
+    limbNodes: createLimbNodes(hx + PW / 2, hy + PH * 0.25),
+    heldSpear: false,
+    starving: false,
   };
 }
 
@@ -380,32 +491,49 @@ function spawnEnemies(
 function spawnItems(
   room: Room,
   startId: number,
-): { items: FoodItem[]; nextId: number } {
+): { items: FoodItem[]; spears: Spear[]; nextId: number } {
   let nextId = startId;
   const items: FoodItem[] = [];
+  const spears: Spear[] = [];
   for (const def of room.items) {
-    items.push({
-      id: nextId++,
-      x: def.x * TS + 8,
-      y: def.y * TS - 10,
-      w: 14,
-      h: 14,
-      collected: false,
-      floatTimer: Math.random() * Math.PI * 2,
-    });
+    if (def.type === "food") {
+      items.push({
+        id: nextId++,
+        x: def.x * TS + 8,
+        y: def.y * TS - 10,
+        w: 14,
+        h: 14,
+        collected: false,
+        floatTimer: Math.random() * Math.PI * 2,
+      });
+    } else if (def.type === "spear") {
+      spears.push({
+        id: nextId++,
+        x: def.x * TS,
+        y: def.y * TS - 8,
+        vx: 0,
+        vy: 0,
+        angle: 0,
+        angVel: 0,
+        stuck: true, // spawned spears rest on ground
+        w: 24,
+        h: 4,
+      });
+    }
   }
-  return { items, nextId };
+  return { items, spears, nextId };
 }
 
 export function initGameState(rooms: Room[], initialRoom: number): GameState {
   const room = rooms[initialRoom];
   const player = createPlayer(room);
   const { enemies, nextId: nid1 } = spawnEnemies(room, 1);
-  const { items, nextId: nid2 } = spawnItems(room, nid1);
+  const { items, spears, nextId: nid2 } = spawnItems(room, nid1);
   return {
     player,
     enemies,
     items,
+    spears,
     particles: [],
     rooms,
     currentRoom: initialRoom,
@@ -422,6 +550,7 @@ export function initGameState(rooms: Room[], initialRoom: number): GameState {
     canvasH: window.innerHeight,
     prevJump: false,
     prevGrab: false,
+    starvationPenalty: false,
   };
 }
 
@@ -429,11 +558,15 @@ function transitionRoom(gs: GameState, targetRoom: number) {
   gs.currentRoom = targetRoom;
   const room = gs.rooms[targetRoom];
   gs.player = createPlayer(room);
+  // Preserve hunger/karma/heldSpear/starving across rooms
+  gs.player.hunger = 0;
+  gs.player.karma = Math.max(1, gs.player.karma);
   const { enemies, nextId: nid1 } = spawnEnemies(room, gs.nextId);
   gs.enemies = enemies;
   gs.nextId = nid1;
-  const { items, nextId: nid2 } = spawnItems(room, gs.nextId);
+  const { items, spears, nextId: nid2 } = spawnItems(room, gs.nextId);
   gs.items = items;
+  gs.spears = spears;
   gs.nextId = nid2;
   gs.particles = [];
   gs.camera = { x: 0, y: 0 };
@@ -454,28 +587,52 @@ function updatePlayer(gs: GameState) {
   const jumpPressed = up && !gs.prevJump;
   const grabPressed = grab && !gs.prevGrab;
 
-  if (grabPressed && p.grabCooldown <= 0) {
-    let grabbed = false;
-    for (let i = 0; i < gs.enemies.length; i++) {
-      const e = gs.enemies[i];
-      if (e.type === "batfly" && overlaps(p, e)) {
-        gs.enemies.splice(i, 1);
-        p.hunger++;
-        p.hasGrabbed = true;
-        p.grabCooldown = 20;
-        if (p.hunger >= 4) {
-          p.karma = Math.min(p.karma + 1, 5);
-          p.hunger = 0;
+  // ── Spear throw ──────────────────────────────────────────────────────────
+  if (grabPressed && p.heldSpear) {
+    const throwSpeed = 12;
+    gs.spears.push({
+      id: gs.nextId++,
+      x: p.x + p.w / 2 + p.facing * 10,
+      y: p.y + p.h / 2 - 2,
+      vx: p.facing * throwSpeed,
+      vy: -2,
+      angle: p.facing === 1 ? 0 : Math.PI,
+      angVel: p.facing * 0.3,
+      stuck: false,
+      w: 24,
+      h: 4,
+    });
+    p.heldSpear = false;
+  } else if (grabPressed && p.grabCooldown <= 0) {
+    // ── Spear pickup ────────────────────────────────────────────────────────
+    let pickedUpSpear = false;
+    if (!p.heldSpear) {
+      const pickupBox = { x: p.x - 10, y: p.y - 10, w: p.w + 20, h: p.h + 20 };
+      for (let si = 0; si < gs.spears.length; si++) {
+        const s = gs.spears[si];
+        const spearBox = {
+          x: s.x - s.w / 2,
+          y: s.y - s.h / 2,
+          w: s.w,
+          h: s.h + 4,
+        };
+        if (overlaps(pickupBox, spearBox)) {
+          p.heldSpear = true;
+          p.grabCooldown = 20;
+          gs.spears.splice(si, 1);
+          pickedUpSpear = true;
+          break;
         }
-        grabbed = true;
-        break;
       }
     }
-    if (!grabbed) {
-      for (let i = 0; i < gs.items.length; i++) {
-        const item = gs.items[i];
-        if (!item.collected && overlaps(p, item)) {
-          item.collected = true;
+
+    if (!pickedUpSpear) {
+      // ── Batfly grab ───────────────────────────────────────────────────────
+      let grabbed = false;
+      for (let i = 0; i < gs.enemies.length; i++) {
+        const e = gs.enemies[i];
+        if (e.type === "batfly" && overlaps(p, e)) {
+          gs.enemies.splice(i, 1);
           p.hunger++;
           p.hasGrabbed = true;
           p.grabCooldown = 20;
@@ -483,7 +640,24 @@ function updatePlayer(gs: GameState) {
             p.karma = Math.min(p.karma + 1, 5);
             p.hunger = 0;
           }
+          grabbed = true;
           break;
+        }
+      }
+      if (!grabbed) {
+        for (let i = 0; i < gs.items.length; i++) {
+          const item = gs.items[i];
+          if (!item.collected && overlaps(p, item)) {
+            item.collected = true;
+            p.hunger++;
+            p.hasGrabbed = true;
+            p.grabCooldown = 20;
+            if (p.hunger >= 4) {
+              p.karma = Math.min(p.karma + 1, 5);
+              p.hunger = 0;
+            }
+            break;
+          }
         }
       }
     }
@@ -518,88 +692,131 @@ function updatePlayer(gs: GameState) {
       p.vx = 0;
       if (up) p.vy = -CLIMB_SPEED;
       else if (down) p.vy = CLIMB_SPEED;
-      else p.vy *= 0.7;
+      else p.vy = 0;
+
       if (jumpPressed) {
         p.onPole = false;
-        p.vy = JUMP_FORCE;
-        p.vx = left ? -PLAYER_SPEED : PLAYER_SPEED;
-        p.jumpsLeft = 1;
+        p.vy = JUMP_FORCE * 0.8;
+        p.vx = left ? -PLAYER_SPEED * 1.3 : right ? PLAYER_SPEED * 1.3 : 0;
       }
-      p.y += p.vy;
-      p.y = Math.max(0, Math.min(p.y, room.rows * TS - p.h));
-      p.onGround = false;
-      p.state = "climb";
-      if (Math.abs(p.vy) > 0.5 && gs.frame % 8 === 0)
-        spawnDust(gs, p.x + p.w / 2, p.y + p.h);
-      updateBodyChunks(p);
-      return;
     }
   }
 
-  if (left && !p.crouching) {
-    p.vx = -PLAYER_SPEED;
-    p.facing = -1;
-  } else if (right && !p.crouching) {
-    p.vx = PLAYER_SPEED;
-    p.facing = 1;
-  } else {
+  if (!p.onPole) {
+    if (left) {
+      p.vx -= PLAYER_SPEED * (p.onGround ? 0.5 : 0.3);
+      p.facing = -1;
+    }
+    if (right) {
+      p.vx += PLAYER_SPEED * (p.onGround ? 0.5 : 0.3);
+      p.facing = 1;
+    }
+    p.vx = Math.max(-PLAYER_SPEED * 1.5, Math.min(p.vx, PLAYER_SPEED * 1.5));
     p.vx *= p.onGround ? FRIC_GROUND : FRIC_AIR;
-    if (Math.abs(p.vx) < 0.1) p.vx = 0;
-  }
 
-  const slidingLeft = p.wallLeft && left && !p.onGround;
-  const slidingRight = p.wallRight && right && !p.onGround;
-  p.wallSliding = slidingLeft || slidingRight;
-  if (p.wallSliding && p.vy > WALL_SLIDE_MAX) p.vy = WALL_SLIDE_MAX;
+    detectWalls(p, room);
+    p.wallSliding =
+      !p.onGround && ((p.wallLeft && left) || (p.wallRight && right));
 
-  if (jumpPressed) {
-    if (p.onGround) {
-      p.vy = JUMP_FORCE;
+    if (p.wallSliding) {
+      p.vy = Math.min(p.vy, WALL_SLIDE_MAX);
       p.jumpsLeft = 1;
-      spawnDust(gs, p.x + p.w / 2, p.y + p.h);
-    } else if (p.wallSliding) {
-      p.vy = JUMP_FORCE;
-      p.vx = p.wallLeft ? PLAYER_SPEED * 1.5 : -PLAYER_SPEED * 1.5;
-      p.jumpsLeft = 1;
-      p.wallSliding = false;
-    } else if (p.jumpsLeft > 0) {
-      p.vy = JUMP_FORCE * 0.85;
-      p.jumpsLeft--;
     }
+
+    if (jumpPressed && p.jumpsLeft > 0) {
+      p.vy = JUMP_FORCE;
+      p.jumpsLeft--;
+      if (p.wallSliding) {
+        p.vx = p.wallLeft ? PLAYER_SPEED * 2 : -PLAYER_SPEED * 2;
+      }
+    }
+
+    p.vy += GRAVITY;
+    if (p.vy > MAX_FALL) p.vy = MAX_FALL;
+
+    const prevY = p.y;
+    if (p.dropThrough > 0) p.dropThrough--;
+    resolvePlayerX(p, room);
+    p.onGround = resolvePlayerY(p, room, prevY);
+    if (p.onGround) p.jumpsLeft = 1;
+  } else {
+    p.vy += GRAVITY * 0.15;
+    p.vy = Math.max(-CLIMB_SPEED, Math.min(p.vy, CLIMB_SPEED));
+    p.y += p.vy;
+    p.onGround = false;
   }
 
-  p.vy += GRAVITY;
-  if (p.vy > MAX_FALL) p.vy = MAX_FALL;
+  if (p.x < 0) p.x = 0;
+  if (p.x + p.w > room.cols * TS) p.x = room.cols * TS - p.w;
 
-  const prevY = p.y;
-  resolvePlayerX(p, room);
-  p.onGround = resolvePlayerY(p, room, prevY);
-  detectWalls(p, room);
+  if (overlaps(p, { x: -9999, y: room.rows * TS, w: 99999, h: 100 })) {
+    gs.phase = "dead";
+    return;
+  }
 
-  if (p.onGround) p.jumpsLeft = 1;
-  if (p.onGround && Math.abs(p.vx) > 2 && gs.frame % 6 === 0)
-    spawnDust(gs, p.x + p.w / 2, p.y + p.h);
-
-  p.x = Math.max(-p.w, Math.min(p.x, room.cols * TS));
-  p.y = Math.max(0, Math.min(p.y, room.rows * TS - p.h));
-
-  if (p.onGround) {
-    if (Math.abs(p.vx) > 0.5) p.state = "run";
-    else if (p.crouching) p.state = "crouch";
-    else p.state = "idle";
+  const spd = Math.abs(p.vx);
+  if (!p.onGround && !p.onPole) {
+    p.state = p.vy < 0 ? "jump" : "fall";
   } else if (p.wallSliding) {
     p.state = "wallSlide";
-  } else if (p.vy < 0) {
-    p.state = "jump";
+  } else if (p.onPole) {
+    p.state = "climb";
+  } else if (p.crouching) {
+    p.state = "crouch";
+  } else if (spd > 0.5) {
+    p.state = "run";
   } else {
-    p.state = "fall";
+    p.state = "idle";
   }
-
   p.animTimer++;
-  if (p.dropThrough > 0) p.dropThrough--;
   if (p.grabCooldown > 0) p.grabCooldown--;
 
   updateBodyChunks(p);
+}
+
+function updateSpears(gs: GameState) {
+  const room = gs.rooms[gs.currentRoom];
+  for (const spear of gs.spears) {
+    if (spear.stuck) continue;
+    spear.vy += GRAVITY * 0.6;
+    spear.x += spear.vx;
+    spear.y += spear.vy;
+    spear.angle += spear.angVel;
+    spear.angVel *= 0.98;
+    // Align angle to velocity when flying fast
+    if (Math.abs(spear.vx) > 2) {
+      spear.angle = Math.atan2(spear.vy, spear.vx);
+    }
+    // Wall/floor collision
+    const tc = Math.floor(spear.x / TS);
+    const tr = Math.floor(spear.y / TS);
+    if (isSolid(getTile(room, tc, tr)) || isSolid(getTile(room, tc, tr + 1))) {
+      spear.stuck = true;
+      spear.vx = 0;
+      spear.vy = 0;
+      spear.angVel = 0;
+    }
+    // Out of bounds
+    if (spear.y > room.rows * TS) spear.stuck = true;
+  }
+
+  // Spear vs lizard collision
+  for (let si = gs.spears.length - 1; si >= 0; si--) {
+    const spear = gs.spears[si];
+    if (spear.stuck) continue;
+    // Only flying spears can hit (speed threshold)
+    if (Math.abs(spear.vx) < 3 && Math.abs(spear.vy) < 3) continue;
+    const spearRect = { x: spear.x - 12, y: spear.y - 2, w: 24, h: 4 };
+    for (let ei = gs.enemies.length - 1; ei >= 0; ei--) {
+      const e = gs.enemies[ei];
+      if (e.type === "lizard" && overlaps(spearRect, e)) {
+        gs.enemies.splice(ei, 1);
+        gs.spears.splice(si, 1);
+        spawnDust(gs, e.x + e.w / 2, e.y + e.h / 2);
+        break;
+      }
+    }
+  }
 }
 
 function updateEnemies(gs: GameState) {
@@ -713,15 +930,15 @@ function checkSpikes(gs: GameState) {
 }
 
 function spawnDust(gs: GameState, x: number, y: number) {
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 6; i++) {
     gs.particles.push({
       x,
       y,
-      vx: (Math.random() - 0.5) * 2,
-      vy: -Math.random() * 1.5,
+      vx: (Math.random() - 0.5) * 3,
+      vy: -Math.random() * 2.5,
       life: 0.8 + Math.random() * 0.4,
       type: "dust",
-      size: 2 + Math.random() * 2,
+      size: 2 + Math.random() * 3,
     });
   }
 }
@@ -781,14 +998,21 @@ function update(gs: GameState) {
         gs.phase = "won";
         return;
       }
+      // Apply starvation penalty before waking
+      if (gs.starvationPenalty) {
+        gs.player.starving = true;
+        gs.player.karma = Math.max(1, gs.player.karma - 1);
+        gs.starvationPenalty = false;
+      }
       gs.rainTimer = RAIN_DURATION;
       gs.rainActive = false;
       gs.rainExposure = 0;
       const { enemies, nextId: nid1 } = spawnEnemies(room, gs.nextId);
       gs.enemies = enemies;
       gs.nextId = nid1;
-      const { items, nextId: nid2 } = spawnItems(room, gs.nextId);
+      const { items, spears, nextId: nid2 } = spawnItems(room, gs.nextId);
       gs.items = items;
+      gs.spears = spears;
       gs.nextId = nid2;
       gs.phase = "playing";
     }
@@ -817,9 +1041,12 @@ function update(gs: GameState) {
   if ((gs.phase as string) === "dead") return;
   updateEnemies(gs);
   if ((gs.phase as string) === "dead") return;
+  updateSpears(gs);
 
   const pressingDown = gs.keys.has("ArrowDown") || gs.keys.has("KeyS");
   if (inShelterZone(gs.player, room) && gs.player.onGround && pressingDown) {
+    // Set starvation penalty based on hunger before sleeping
+    gs.starvationPenalty = gs.player.hunger < 2;
     gs.phase = "sleeping";
     gs.sleepTimer = SLEEP_DURATION;
   }
@@ -911,9 +1138,38 @@ function drawTile(
   }
 }
 
+function drawSpear(
+  ctx: CanvasRenderingContext2D,
+  spear: Spear,
+  camX: number,
+  camY: number,
+) {
+  const sx = spear.x - camX;
+  const sy = spear.y - camY;
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.rotate(spear.angle);
+  // Shaft
+  ctx.fillStyle = "#8B6914";
+  ctx.fillRect(-14, -1.5, 24, 3);
+  // Tip (metal point)
+  ctx.fillStyle = "#aaaacc";
+  ctx.beginPath();
+  ctx.moveTo(10, 0);
+  ctx.lineTo(14, -3);
+  ctx.lineTo(16, 0);
+  ctx.lineTo(14, 3);
+  ctx.closePath();
+  ctx.fill();
+  // Butt end
+  ctx.fillStyle = "#6a4a0a";
+  ctx.fillRect(-14, -2, 3, 4);
+  ctx.restore();
+}
+
 /**
- * Draw slugcat using procedural body chunks + tail nodes.
- * Renders back-to-front: tail → hips → body strip → upper body → neck → head.
+ * Draw slugcat using procedural body chunks + tail nodes + limb nodes.
+ * Render order: back limbs → tail → body → front limbs → head
  */
 function drawPlayer(
   ctx: CanvasRenderingContext2D,
@@ -924,6 +1180,7 @@ function drawPlayer(
 ) {
   const chunks = p.bodyChunks;
   const tail = p.tailNodes;
+  const limbs = p.limbNodes;
 
   // Helper: world → screen
   const sx = (c: BodyChunk) => c.x - camX;
@@ -937,59 +1194,97 @@ function drawPlayer(
   const body2SY = sy(chunks[2]);
 
   const bodyColor = "#f0ead6";
-  const darkBody = "#e0d8c2";
-  const tailColor = "#d8d0bc";
+  const limbColor = "#c8c0aa";
   const shadow = "rgba(0,0,0,0.22)";
 
-  // ── Tail ──────────────────────────────────────────────────────────────────
-  if (tail.length > 1) {
-    // Shadow
-    ctx.save();
-    ctx.strokeStyle = shadow;
-    ctx.lineWidth = tail[0].r * 2 + 2;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.beginPath();
-    ctx.moveTo(body2SX + 1, body2SY + 2);
-    for (const t of tail) ctx.lineTo(t.x - camX + 1, t.y - camY + 2);
-    ctx.stroke();
-    ctx.restore();
+  // ── Helper: draw a 2-segment leg ─────────────────────────────────────────
+  function drawLimb(
+    attachX: number,
+    attachY: number,
+    footX: number,
+    footY: number,
+    bendDir: number, // +1 = bend right/forward, -1 = bend left/back
+  ) {
+    const midX = (attachX + footX) / 2;
+    const midY = (attachY + footY) / 2;
+    // Perpendicular offset for knee bend
+    const dx = footX - attachX;
+    const dy = footY - attachY;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    const perpX = (-dy / len) * 5 * bendDir;
+    const perpY = (dx / len) * 5 * bendDir;
+    const kneeX = midX + perpX;
+    const kneeY = midY + perpY;
 
-    // Tapered segments
     ctx.save();
+    ctx.strokeStyle = limbColor;
+    ctx.lineWidth = 2;
     ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    const pts = [
-      { x: body2SX, y: body2SY },
-      ...tail.map((t) => ({ x: t.x - camX, y: t.y - camY })),
-    ];
-    for (let i = 0; i < pts.length - 1; i++) {
-      const t = i / (pts.length - 1);
-      ctx.beginPath();
-      ctx.moveTo(pts[i].x, pts[i].y);
-      ctx.lineTo(pts[i + 1].x, pts[i + 1].y);
-      ctx.strokeStyle = tailColor;
-      ctx.lineWidth = Math.max(0.8, tail[0].r * 2 * (1 - t * 0.85));
-      ctx.stroke();
-    }
+    ctx.beginPath();
+    ctx.moveTo(attachX, attachY);
+    ctx.lineTo(kneeX, kneeY);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(kneeX, kneeY);
+    ctx.lineTo(footX, footY);
+    ctx.stroke();
+    // Small foot dot
+    ctx.fillStyle = limbColor;
+    ctx.beginPath();
+    ctx.arc(footX, footY, 1.5, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 
-  // ── Lower body / hips ────────────────────────────────────────────────────
+  // Attach points in screen space
+  const frontAttachX = body1SX;
+  const frontAttachY = body1SY + 2;
+  const backAttachX = body2SX;
+  const backAttachY = body2SY + 2;
+
+  const facing = p.facing;
+
+  // ── Back limbs (drawn BEFORE body) ───────────────────────────────────────
+  if (limbs && limbs.length >= 4) {
+    // backLeft [2], backRight [3]
+    drawLimb(backAttachX - 2, backAttachY, sx(limbs[2]), sy(limbs[2]), -facing);
+    drawLimb(backAttachX + 2, backAttachY, sx(limbs[3]), sy(limbs[3]), facing);
+  }
+
+  // ── Tail ─────────────────────────────────────────────────────────────────
+  const tailRoot = chunks[chunks.length - 1];
+  ctx.save();
+  ctx.strokeStyle = "#c8c0aa";
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(sx(tailRoot), sy(tailRoot));
+  for (let i = 0; i < tail.length; i++) {
+    const t = tail[i];
+    const w = tailRoot.r * 2 - (i * (tailRoot.r * 2 - 0.8)) / tail.length;
+    ctx.lineWidth = Math.max(0.8, w);
+    ctx.lineTo(sx(t), sy(t));
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(sx(t), sy(t));
+  }
+  ctx.restore();
+
+  // ── Hips ──────────────────────────────────────────────────────────────────
   ctx.save();
   ctx.fillStyle = shadow;
   ctx.beginPath();
   ctx.ellipse(
     body2SX + 1,
     body2SY + 2,
-    chunks[2].r + 1.5,
-    chunks[2].r + 0.5,
+    chunks[2].r + 1,
+    chunks[2].r,
     0,
     0,
     Math.PI * 2,
   );
   ctx.fill();
-  ctx.fillStyle = darkBody;
+  ctx.fillStyle = bodyColor;
   ctx.beginPath();
   ctx.ellipse(
     body2SX,
@@ -1042,6 +1337,43 @@ function drawPlayer(
   ctx.fill();
   ctx.restore();
 
+  // ── Front limbs (drawn AFTER body, BEFORE head) ───────────────────────────
+  if (limbs && limbs.length >= 2) {
+    // frontLeft [0], frontRight [1]
+    drawLimb(
+      frontAttachX - 2,
+      frontAttachY,
+      sx(limbs[0]),
+      sy(limbs[0]),
+      -facing,
+    );
+    drawLimb(
+      frontAttachX + 2,
+      frontAttachY,
+      sx(limbs[1]),
+      sy(limbs[1]),
+      facing,
+    );
+  }
+
+  // ── Held spear ────────────────────────────────────────────────────────────
+  if (p.heldSpear) {
+    ctx.save();
+    ctx.translate(headSX + facing * 4, headSY + 2);
+    ctx.rotate(facing > 0 ? -0.3 : Math.PI + 0.3);
+    ctx.fillStyle = "#8B6914";
+    ctx.fillRect(-14, -1.5, 24, 3);
+    ctx.fillStyle = "#aaaacc";
+    ctx.beginPath();
+    ctx.moveTo(10, 0);
+    ctx.lineTo(14, -3);
+    ctx.lineTo(16, 0);
+    ctx.lineTo(14, 3);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
   // ── Neck connector ────────────────────────────────────────────────────────
   ctx.save();
   ctx.strokeStyle = bodyColor;
@@ -1054,8 +1386,6 @@ function drawPlayer(
   ctx.restore();
 
   // ── Head ──────────────────────────────────────────────────────────────────
-  const facing = p.facing;
-
   // Compute head tilt from body chain angle
   const hdx = headSX - body1SX;
   const hdy = headSY - body1SY;
@@ -1292,6 +1622,38 @@ function drawHUD(
   ctx.fillStyle = "rgba(140,120,80,0.6)";
   ctx.fillText("FOOD", 112, pipY);
 
+  // Held spear indicator
+  if (p.heldSpear) {
+    ctx.save();
+    ctx.translate(170, pipY);
+    ctx.fillStyle = "#8B6914";
+    ctx.fillRect(-10, -1.5, 18, 3);
+    ctx.fillStyle = "#aaaacc";
+    ctx.beginPath();
+    ctx.moveTo(8, 0);
+    ctx.lineTo(11, -2.5);
+    ctx.lineTo(13, 0);
+    ctx.lineTo(11, 2.5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = "rgba(180,160,100,0.8)";
+    ctx.font = '11px "JetBrains Mono", monospace';
+    ctx.textBaseline = "middle";
+    ctx.fillText("SPEAR", 16, 0);
+    ctx.restore();
+  }
+
+  // Starving warning
+  if (p.starving) {
+    ctx.save();
+    const pulse = 0.6 + Math.sin(gs.frame * 0.15) * 0.4;
+    ctx.fillStyle = `rgba(255,60,60,${pulse})`;
+    ctx.font = '13px "JetBrains Mono", monospace';
+    ctx.textBaseline = "middle";
+    ctx.fillText("⚠ STARVING", 22, 80);
+    ctx.restore();
+  }
+
   const secs = gs.rainTimer / 1000;
   const mins = Math.floor(secs / 60);
   const sec = Math.floor(secs % 60);
@@ -1339,6 +1701,11 @@ function drawHUD(
     ctx.textAlign = "center";
     const zzz = "".padStart(Math.floor(gs.frame / 20) % 4, "z").toUpperCase();
     ctx.fillText(`sleeping${zzz}`, w / 2, h / 2);
+    if (gs.starvationPenalty) {
+      ctx.fillStyle = "rgba(255,80,60,0.8)";
+      ctx.font = '16px "JetBrains Mono", monospace';
+      ctx.fillText("insufficient food — karma will drop", w / 2, h / 2 + 36);
+    }
     ctx.textAlign = "left";
   }
 
@@ -1346,7 +1713,7 @@ function drawHUD(
     ctx.fillStyle = "rgba(140,140,180,0.5)";
     ctx.font = '12px "JetBrains Mono", monospace';
     ctx.textAlign = "center";
-    ctx.fillText("[ Z / X ] GRAB   [ ↑/SPACE ] JUMP", w / 2, h - 36);
+    ctx.fillText("[ Z / X ] GRAB · THROW   [ ↑/SPACE ] JUMP", w / 2, h - 36);
     ctx.textAlign = "left";
   }
 
@@ -1373,9 +1740,9 @@ function render(canvas: HTMLCanvasElement, gs: GameState) {
 
   ctx.fillStyle = "rgba(150,150,200,0.15)";
   for (let i = 0; i < 40; i++) {
-    const sx = (((i * 137 + camX * 0.05) % W) + W) % W;
-    const sy = (((i * 97 + camY * 0.05) % H) + H) % H;
-    ctx.fillRect(sx, sy, 1, 1);
+    const starX = (((i * 137 + camX * 0.05) % W) + W) % W;
+    const starY = (((i * 97 + camY * 0.05) % H) + H) % H;
+    ctx.fillRect(starX, starY, 1, 1);
   }
 
   const startCol = Math.max(0, Math.floor(camX / TS) - 1);
@@ -1392,6 +1759,11 @@ function render(canvas: HTMLCanvasElement, gs: GameState) {
   for (const item of gs.items)
     drawFoodItem(ctx, { ...item, x: item.x - camX, y: item.y - camY });
 
+  // Draw spears (world)
+  for (const spear of gs.spears) {
+    drawSpear(ctx, spear, camX, camY);
+  }
+
   for (const e of gs.enemies) {
     if (e.type === "lizard")
       drawLizard(ctx, { ...e, x: e.x - camX, y: e.y - camY });
@@ -1401,20 +1773,20 @@ function render(canvas: HTMLCanvasElement, gs: GameState) {
   // Procedural slugcat (camera offset passed directly)
   drawPlayer(ctx, gs.player, camX, camY, gs.frame);
 
-  for (const p of gs.particles) {
-    const sx = p.x - camX;
-    const sy = p.y - camY;
-    if (p.type === "rain") {
-      ctx.strokeStyle = `rgba(180,200,255,${p.life * 0.55})`;
-      ctx.lineWidth = p.size * 0.8;
+  for (const part of gs.particles) {
+    const psx = part.x - camX;
+    const psy = part.y - camY;
+    if (part.type === "rain") {
+      ctx.strokeStyle = `rgba(180,200,255,${part.life * 0.55})`;
+      ctx.lineWidth = part.size * 0.8;
       ctx.beginPath();
-      ctx.moveTo(sx, sy);
-      ctx.lineTo(sx + p.vx * 3, sy + p.vy * 3);
+      ctx.moveTo(psx, psy);
+      ctx.lineTo(psx + part.vx * 3, psy + part.vy * 3);
       ctx.stroke();
     } else {
-      ctx.fillStyle = `rgba(200,190,170,${p.life * 0.5})`;
+      ctx.fillStyle = `rgba(200,190,170,${part.life * 0.5})`;
       ctx.beginPath();
-      ctx.arc(sx, sy, p.size, 0, Math.PI * 2);
+      ctx.arc(psx, psy, part.size, 0, Math.PI * 2);
       ctx.fill();
     }
   }
@@ -1425,9 +1797,9 @@ function render(canvas: HTMLCanvasElement, gs: GameState) {
     ctx.fillRect(0, 0, W, H);
   }
 
-  for (let sy = 0; sy < H; sy += 4) {
+  for (let scanY = 0; scanY < H; scanY += 4) {
     ctx.fillStyle = "rgba(0,0,0,0.07)";
-    ctx.fillRect(0, sy, W, 2);
+    ctx.fillRect(0, scanY, W, 2);
   }
 
   drawHUD(ctx, gs, W, H);

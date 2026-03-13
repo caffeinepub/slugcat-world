@@ -23,7 +23,7 @@ export interface SpawnDef {
 }
 
 export interface ItemDef {
-  type: "food";
+  type: "food" | "spear";
   x: number;
   y: number;
 }
@@ -64,6 +64,10 @@ export interface Player {
   bodyChunks: BodyChunk[];
   /** Procedural tail nodes trailing from lower body */
   tailNodes: BodyChunk[];
+  /** 4 foot nodes: [frontLeft, frontRight, backLeft, backRight] */
+  limbNodes: BodyChunk[];
+  heldSpear: boolean;
+  starving: boolean;
 }
 
 export type PlayerState =
@@ -103,6 +107,19 @@ export interface FoodItem {
   floatTimer: number;
 }
 
+export interface Spear {
+  id: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  angle: number;
+  angVel: number;
+  stuck: boolean;
+  w: number;
+  h: number;
+}
+
 export interface Particle {
   x: number;
   y: number;
@@ -122,6 +139,7 @@ export interface GameState {
   player: Player;
   enemies: Enemy[];
   items: FoodItem[];
+  spears: Spear[];
   particles: Particle[];
   rooms: Room[];
   currentRoom: number;
@@ -138,6 +156,7 @@ export interface GameState {
   canvasH: number;
   prevJump: boolean;
   prevGrab: boolean;
+  starvationPenalty: boolean;
 }
 
 export interface ModLevel {
