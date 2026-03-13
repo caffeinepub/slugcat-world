@@ -1450,17 +1450,86 @@ function drawPlayer(
 function drawLizard(ctx: CanvasRenderingContext2D, e: Enemy) {
   const { x, y, w, h, facing, animTimer, state } = e;
   const walkBob = e.onGround ? Math.sin(animTimer * 0.18) * 1.5 : 0;
+
+  const bodyColor = state === "chase" ? "#5aba5a" : "#4a9a4a";
+  const limbColor = "#3a7a3a";
+
+  // Helper: draw a 2-segment limb (attach → knee → foot)
+  function drawLimb2(
+    ax: number,
+    ay: number,
+    fx: number,
+    fy: number,
+    bendDir: number,
+    thick: number,
+  ) {
+    const mx = (ax + fx) / 2;
+    const my = (ay + fy) / 2;
+    const dx = fx - ax;
+    const dy = fy - ay;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    const kx = mx + (-dy / len) * 5 * bendDir;
+    const ky = my + (dx / len) * 5 * bendDir;
+    ctx.save();
+    ctx.strokeStyle = limbColor;
+    ctx.lineWidth = thick;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(kx, ky);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(kx, ky);
+    ctx.lineTo(fx, fy);
+    ctx.stroke();
+    ctx.fillStyle = limbColor;
+    ctx.beginPath();
+    ctx.arc(fx, fy, thick * 0.8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
   ctx.save();
   ctx.translate(x + w / 2, y + h / 2 + walkBob);
   ctx.scale(facing, 1);
 
+  // Walk animation: alternating stride for legs (phase 0 and PI), arms counter-swing
+  const legPhase = animTimer * 0.22;
+  const legSwing = e.onGround ? 5 : 3;
+  const armSwing = e.onGround ? 4 : 2;
+
+  // Leg positions: lower body, stride forward/backward alternating
+  const legLY = h / 2 - 2; // leg attach Y (lower body)
+  const legLXL = -5; // left leg attach X
+  const legLXR = 5; // right leg attach X
+
+  const legFootL_X = legLXL + Math.sin(legPhase) * legSwing;
+  const legFootL_Y = h / 2 + 7 + Math.max(0, -Math.sin(legPhase)) * 3;
+  const legFootR_X = legLXR - Math.sin(legPhase) * legSwing;
+  const legFootR_Y = h / 2 + 7 + Math.max(0, Math.sin(legPhase)) * 3;
+
+  // Arm positions: upper body, arms swing opposite to legs
+  const armAY = -h / 2 + 4; // arm attach Y (upper body)
+  const armAXL = -4;
+  const armAXR = 4;
+
+  const armFootL_X = armAXL - Math.sin(legPhase) * armSwing;
+  const armFootL_Y = 2 + Math.cos(legPhase) * armSwing * 0.5;
+  const armFootR_X = armAXR + Math.sin(legPhase) * armSwing;
+  const armFootR_Y = 2 - Math.cos(legPhase) * armSwing * 0.5;
+
+  // ── Back legs (drawn behind body) ─────────────────────────────────────────
+  drawLimb2(legLXL - 1, legLY, legFootL_X - 1, legFootL_Y, 1, 1.5);
+  drawLimb2(legLXR + 1, legLY, legFootR_X + 1, legFootR_Y, -1, 1.5);
+
+  // ── Shadow ────────────────────────────────────────────────────────────────
   ctx.fillStyle = "rgba(0,0,0,0.25)";
   ctx.beginPath();
   ctx.ellipse(2, 3, w / 2, h / 2 - 2, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  const bodyG = state === "chase" ? "#5aba5a" : "#4a9a4a";
-  ctx.fillStyle = bodyG;
+  // ── Body (torso) ──────────────────────────────────────────────────────────
+  ctx.fillStyle = bodyColor;
   ctx.beginPath();
   ctx.ellipse(0, 0, w / 2, h / 2, 0, 0, Math.PI * 2);
   ctx.fill();
@@ -1469,11 +1538,42 @@ function drawLizard(ctx: CanvasRenderingContext2D, e: Enemy) {
   ctx.ellipse(2, 2, w / 2 - 6, h / 2 - 4, 0, 0, Math.PI * 2);
   ctx.fill();
 
+  // ── Tail ──────────────────────────────────────────────────────────────────
+  const tailWag = Math.sin(animTimer * 0.15) * 3;
+  ctx.strokeStyle = "#3a7a3a";
+  ctx.lineWidth = 3;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(-w / 2, 2);
+  ctx.bezierCurveTo(
+    -w / 2 - 8,
+    4 + tailWag * 0.5,
+    -w / 2 - 14,
+    tailWag,
+    -w / 2 - 20,
+    -4 + tailWag,
+  );
+  ctx.stroke();
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(-w / 2 - 14, tailWag);
+  ctx.bezierCurveTo(
+    -w / 2 - 20,
+    -4 + tailWag,
+    -w / 2 - 24,
+    -2 + tailWag * 0.8,
+    -w / 2 - 26,
+    tailWag * 0.5,
+  );
+  ctx.stroke();
+
+  // ── Head ──────────────────────────────────────────────────────────────────
   const headX = w / 2 - 2;
-  ctx.fillStyle = bodyG;
+  ctx.fillStyle = bodyColor;
   ctx.beginPath();
   ctx.ellipse(headX, -2, 8, 6, 0, 0, Math.PI * 2);
   ctx.fill();
+  // Eye
   ctx.fillStyle = "#1a1a1a";
   ctx.beginPath();
   ctx.arc(headX + 4, -4, 2, 0, Math.PI * 2);
@@ -1483,25 +1583,10 @@ function drawLizard(ctx: CanvasRenderingContext2D, e: Enemy) {
   ctx.arc(headX + 4, -4, 0.8, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.strokeStyle = "#3a7a3a";
-  ctx.lineWidth = 3;
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.moveTo(-w / 2, 2);
-  ctx.bezierCurveTo(-w / 2 - 8, 4, -w / 2 - 14, 0, -w / 2 - 18, -4);
-  ctx.stroke();
+  // ── Front arms (drawn over body) ──────────────────────────────────────────
+  drawLimb2(armAXL, armAY, armFootL_X, armFootL_Y, -1, 1.5);
+  drawLimb2(armAXR, armAY, armFootR_X, armFootR_Y, 1, 1.5);
 
-  ctx.strokeStyle = "#3a7a3a";
-  ctx.lineWidth = 2;
-  const legAnim = Math.sin(animTimer * 0.2) * 4;
-  ctx.beginPath();
-  ctx.moveTo(-4, h / 2 - 2);
-  ctx.lineTo(-4 + legAnim, h / 2 + 5);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(4, h / 2 - 2);
-  ctx.lineTo(4 - legAnim, h / 2 + 5);
-  ctx.stroke();
   ctx.restore();
 }
 
