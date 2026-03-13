@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Room } from "./GameTypes";
 import { useModRooms } from "./hooks/useQueries";
 
@@ -19,6 +19,28 @@ export function MainMenu({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef(0);
   const rafRef = useRef<number>(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [customSprite, setCustomSprite] = useState<string | null>(() =>
+    localStorage.getItem("customSlugcatSprite"),
+  );
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const dataUrl = ev.target?.result as string;
+      localStorage.setItem("customSlugcatSprite", dataUrl);
+      setCustomSprite(dataUrl);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function clearSprite() {
+    localStorage.removeItem("customSlugcatSprite");
+    setCustomSprite(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
 
   // Animated background
   useEffect(() => {
@@ -186,6 +208,51 @@ export function MainMenu({
           >
             ◈ MOD MANAGER
           </button>
+        </div>
+
+        {/* Customize sprite */}
+        <div className="mb-4 text-center">
+          <p className="text-xs text-gray-700 tracking-widest mb-3 font-mono">
+            ── CUSTOMIZE ──
+          </p>
+          <div className="flex items-center justify-center gap-3">
+            {customSprite && (
+              <img
+                src={customSprite}
+                alt="Custom slugcat sprite"
+                className="w-10 h-10 object-cover border border-gray-700 rounded-sm"
+                style={{ imageRendering: "pixelated" }}
+              />
+            )}
+            <button
+              type="button"
+              data-ocid="main_menu.upload_button"
+              onClick={() => fileInputRef.current?.click()}
+              className="px-5 py-2 font-mono text-xs tracking-widest text-gray-500 border border-gray-800 hover:border-gray-600 hover:text-gray-300 transition-all"
+            >
+              ⬆ UPLOAD SPRITE
+            </button>
+            {customSprite && (
+              <button
+                type="button"
+                data-ocid="main_menu.delete_button"
+                onClick={clearSprite}
+                className="px-4 py-2 font-mono text-xs tracking-widest text-red-900 border border-red-900/30 hover:border-red-700 hover:text-red-500 transition-all"
+              >
+                ✕ CLEAR
+              </button>
+            )}
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleFileChange}
+          />
+          <p className="text-[10px] text-gray-800 mt-2 font-mono">
+            SPRITE SHOWN ON SLUGCAT HEAD
+          </p>
         </div>
 
         {/* Custom levels from mods */}

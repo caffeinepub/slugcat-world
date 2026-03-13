@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   BodyChunk,
   Enemy,
@@ -571,6 +571,7 @@ export function initGameState(rooms: Room[], initialRoom: number): GameState {
     prevJump: false,
     prevGrab: false,
     starvationPenalty: false,
+    customSprite: null as HTMLImageElement | null,
   };
 }
 
@@ -1197,6 +1198,7 @@ function drawPlayer(
   camX: number,
   camY: number,
   _frame: number,
+  customSprite?: HTMLImageElement | null,
 ) {
   const chunks = p.bodyChunks;
   const tail = p.tailNodes;
@@ -1427,41 +1429,87 @@ function drawPlayer(
   ctx.ellipse(0, 0, chunks[0].r + 1, chunks[0].r + 0.5, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // Ear nubs
-  ctx.fillStyle = "#d8d0bc";
+  const r = chunks[0].r + 1;
+
+  // ── Pointed ears (drawn BEFORE head so head overlaps base) ───────────────
+  // Left ear
+  ctx.fillStyle = "#f0ead6";
   ctx.beginPath();
-  ctx.ellipse(
-    -(chunks[0].r - 1),
-    -(chunks[0].r - 1),
-    2.5,
-    3.5,
-    -0.4,
-    0,
-    Math.PI * 2,
-  );
+  ctx.moveTo(-r * 0.7, -r * 0.5);
+  ctx.lineTo(-r * 1.0, -r * 1.5);
+  ctx.lineTo(-r * 0.35, -r * 0.8);
+  ctx.closePath();
   ctx.fill();
+  // Left ear inner
+  ctx.fillStyle = "#e8a0a0";
   ctx.beginPath();
-  ctx.ellipse(
-    chunks[0].r - 1,
-    -(chunks[0].r - 1),
-    2.5,
-    3.5,
-    0.4,
-    0,
-    Math.PI * 2,
-  );
+  ctx.moveTo(-r * 0.7, -r * 0.6);
+  ctx.lineTo(-r * 0.95, -r * 1.35);
+  ctx.lineTo(-r * 0.42, -r * 0.85);
+  ctx.closePath();
+  ctx.fill();
+  // Right ear
+  ctx.fillStyle = "#f0ead6";
+  ctx.beginPath();
+  ctx.moveTo(r * 0.7, -r * 0.5);
+  ctx.lineTo(r * 1.0, -r * 1.5);
+  ctx.lineTo(r * 0.35, -r * 0.8);
+  ctx.closePath();
+  ctx.fill();
+  // Right ear inner
+  ctx.fillStyle = "#e8a0a0";
+  ctx.beginPath();
+  ctx.moveTo(r * 0.7, -r * 0.6);
+  ctx.lineTo(r * 0.95, -r * 1.35);
+  ctx.lineTo(r * 0.42, -r * 0.85);
+  ctx.closePath();
   ctx.fill();
 
-  // Eye (facing-aware in local head space)
-  const eyeX = facing * (chunks[0].r - 1);
-  const eyeY = -(chunks[0].r - 2);
+  // ── Head circle (drawn after ears so it overlaps their base) ─────────────
+  ctx.fillStyle = shadow;
+  ctx.beginPath();
+  ctx.ellipse(1.5, 1.5, r, chunks[0].r + 0.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = bodyColor;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, r, chunks[0].r + 0.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ── Custom sprite clipped to head ─────────────────────────────────────────
+  if (customSprite) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r, chunks[0].r + 0.5, 0, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.drawImage(customSprite, -r - 1, -r - 0.5, (r + 1) * 2, (r + 0.5) * 2);
+    ctx.restore();
+  }
+
+  // ── Two eyes (both on facing side) ───────────────────────────────────────
+  const eye1X = facing * (r - 2);
+  const eye1Y = -r * 0.3;
+  const eye2X = facing * (r * 0.3);
+  const eye2Y = -r * 0.5;
   ctx.fillStyle = "#1a1a2e";
   ctx.beginPath();
-  ctx.arc(eyeX, eyeY, 2, 0, Math.PI * 2);
+  ctx.arc(eye1X, eye1Y, 2, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = "rgba(255,255,255,0.7)";
   ctx.beginPath();
-  ctx.arc(eyeX + 0.6, eyeY - 0.6, 0.7, 0, Math.PI * 2);
+  ctx.arc(eye2X, eye2Y, 1.5, 0, Math.PI * 2);
+  ctx.fill();
+  // Highlights
+  ctx.fillStyle = "rgba(255,255,255,0.75)";
+  ctx.beginPath();
+  ctx.arc(eye1X + 0.6, eye1Y - 0.6, 0.75, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(eye2X + 0.5, eye2Y - 0.5, 0.55, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ── Nose ─────────────────────────────────────────────────────────────────
+  ctx.fillStyle = "#1a1a2e";
+  ctx.beginPath();
+  ctx.arc(facing * (r * 0.5), -r * 0.05, 1.2, 0, Math.PI * 2);
   ctx.fill();
 
   ctx.restore();
@@ -1874,7 +1922,7 @@ function render(canvas: HTMLCanvasElement, gs: GameState) {
   }
 
   // Procedural slugcat (camera offset passed directly)
-  drawPlayer(ctx, gs.player, camX, camY, gs.frame);
+  drawPlayer(ctx, gs.player, camX, camY, gs.frame, gs.customSprite);
 
   for (const part of gs.particles) {
     const psx = part.x - camX;
@@ -1931,6 +1979,16 @@ export function Game({
   const accRef = useRef<number>(0);
   const onDeathRef = useRef(onDeath);
   const onWinRef = useRef(onWin);
+  const customSpriteRef = useRef<HTMLImageElement | null>(null);
+
+  // Dev console state
+  const [devConsoleOpen, setDevConsoleOpen] = useState(false);
+  const [consoleHistory, setConsoleHistory] = useState<string[]>([
+    "Dev Console ready. Type 'help' for commands.",
+  ]);
+  const devConsoleOpenRef = useRef(false);
+  const consoleInputRef = useRef<HTMLInputElement>(null);
+  const historyEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     onDeathRef.current = onDeath;
@@ -1938,6 +1996,132 @@ export function Game({
   useEffect(() => {
     onWinRef.current = onWin;
   }, [onWin]);
+
+  // Load custom sprite from localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem("customSlugcatSprite");
+    if (saved) {
+      const img = new Image();
+      img.onload = () => {
+        customSpriteRef.current = img;
+        if (gsRef.current) gsRef.current.customSprite = img;
+      };
+      img.src = saved;
+    }
+  }, []);
+
+  // Backtick toggle for dev console (separate effect, not inside game loop)
+  useEffect(() => {
+    function handleBacktick(e: KeyboardEvent) {
+      if (e.code === "Backquote") {
+        e.preventDefault();
+        const next = !devConsoleOpenRef.current;
+        devConsoleOpenRef.current = next;
+        setDevConsoleOpen(next);
+        if (next) {
+          setTimeout(() => consoleInputRef.current?.focus(), 50);
+        }
+      }
+    }
+    window.addEventListener("keydown", handleBacktick);
+    return () => window.removeEventListener("keydown", handleBacktick);
+  }, []);
+
+  function executeConsoleCommand(cmd: string): string {
+    const gs = gsRef.current;
+    if (!gs) return "Game not initialized.";
+    const parts = cmd.trim().toLowerCase().split(/\s+/);
+    const verb = parts[0];
+    if (verb === "help") {
+      return [
+        "Commands:",
+        "  spawn lizard  — spawn a lizard at player pos",
+        "  spawn batfly  — spawn a batfly near player",
+        "  kill all      — remove all enemies",
+        "  food <0-4>    — set food pips",
+        "  karma <1-5>   — set karma level",
+      ].join("\n");
+    }
+    if (verb === "spawn") {
+      const type = parts[1];
+      const px = gs.player.x;
+      const py = gs.player.y;
+      if (type === "lizard") {
+        const x = px + 40;
+        const y = py;
+        gs.enemies.push({
+          id: gs.nextId++,
+          type: "lizard",
+          x,
+          y,
+          vx: 0,
+          vy: 0,
+          w: 28,
+          h: 18,
+          onGround: false,
+          facing: 1,
+          state: "patrol",
+          patrolA: Math.max(0, Math.floor(x / 32) - 6),
+          patrolB: Math.floor(x / 32) + 6,
+          wanderTimer: 0,
+          animTimer: 0,
+        });
+        return "Spawned lizard at player position.";
+      }
+      if (type === "batfly") {
+        gs.enemies.push({
+          id: gs.nextId++,
+          type: "batfly",
+          x: px + 20,
+          y: py - 30,
+          vx: (Math.random() - 0.5) * 1.5,
+          vy: -1,
+          w: 10,
+          h: 10,
+          onGround: false,
+          facing: 1,
+          state: "wander",
+          patrolA: 0,
+          patrolB: 0,
+          wanderTimer: 60,
+          animTimer: 0,
+        });
+        return "Spawned batfly near player.";
+      }
+      return `Unknown entity: ${type}`;
+    }
+    if (verb === "kill" && parts[1] === "all") {
+      gs.enemies = [];
+      return "All enemies killed.";
+    }
+    if (verb === "food") {
+      const n = Number.parseInt(parts[1]);
+      if (Number.isNaN(n) || n < 0 || n > 4) return "Usage: food <0-4>";
+      gs.player.hunger = n;
+      return `Food set to ${n}.`;
+    }
+    if (verb === "karma") {
+      const n = Number.parseInt(parts[1]);
+      if (Number.isNaN(n) || n < 1 || n > 5) return "Usage: karma <1-5>";
+      gs.player.karma = n;
+      return `Karma set to ${n}.`;
+    }
+    return "Unknown command. Type 'help' for list.";
+  }
+
+  function handleConsoleSubmit() {
+    const input = consoleInputRef.current;
+    if (!input) return;
+    const cmd = input.value.trim();
+    if (!cmd) return;
+    const result = executeConsoleCommand(cmd);
+    setConsoleHistory((prev) => [...prev, `> ${cmd}`, result]);
+    input.value = "";
+    setTimeout(
+      () => historyEndRef.current?.scrollIntoView({ behavior: "smooth" }),
+      10,
+    );
+  }
 
   const handleMenu = useCallback(() => {
     cancelAnimationFrame(rafRef.current);
@@ -1962,6 +2146,8 @@ export function Game({
 
     const keysRef: Set<string> = new Set();
     function onKeyDown(e: KeyboardEvent) {
+      // Block game input when console is open
+      if (devConsoleOpenRef.current) return;
       keysRef.add(e.code);
       if (
         ["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(
@@ -1982,6 +2168,8 @@ export function Game({
       const gs = gsRef.current;
       if (!gs) return;
       gs.keys = keysRef;
+      // Sync custom sprite to game state
+      gs.customSprite = customSpriteRef.current;
       const rawDt = timestamp - lastTimeRef.current;
       lastTimeRef.current = timestamp;
       accRef.current += Math.min(rawDt, 100);
@@ -2027,6 +2215,72 @@ export function Game({
       >
         [ESC] MENU
       </button>
+
+      {/* Dev Console */}
+      {devConsoleOpen && (
+        <div
+          className="absolute bottom-0 left-0 right-0 h-[200px] bg-black/85 border-t border-green-900/50 flex flex-col font-mono text-xs text-green-400"
+          data-ocid="dev_console.panel"
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between px-3 py-1 border-b border-green-900/40 bg-black/60">
+            <span className="text-green-500 tracking-widest">
+              ▶ DEV CONSOLE
+            </span>
+            <span className="text-green-900">[ ` ] to toggle</span>
+            <button
+              type="button"
+              data-ocid="dev_console.close_button"
+              onClick={() => {
+                devConsoleOpenRef.current = false;
+                setDevConsoleOpen(false);
+              }}
+              className="text-green-800 hover:text-green-400 transition-colors ml-4"
+            >
+              [X]
+            </button>
+          </div>
+          {/* History */}
+          <div className="flex-1 overflow-y-auto px-3 py-1 space-y-0.5">
+            {consoleHistory.map((line, i) => (
+              <div
+                // biome-ignore lint/suspicious/noArrayIndexKey: append-only list
+                key={`console-line-${i}`}
+                className={
+                  line.startsWith(">") ? "text-green-300" : "text-green-600"
+                }
+                style={{ whiteSpace: "pre-wrap" }}
+              >
+                {line}
+              </div>
+            ))}
+            <div ref={historyEndRef} />
+          </div>
+          {/* Input */}
+          <div className="flex items-center px-3 py-1 border-t border-green-900/40">
+            <span className="text-green-700 mr-2">$</span>
+            <input
+              ref={consoleInputRef}
+              data-ocid="dev_console.input"
+              type="text"
+              className="flex-1 bg-transparent outline-none text-green-400 placeholder-green-900"
+              placeholder="type a command..."
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleConsoleSubmit();
+                e.stopPropagation();
+              }}
+            />
+            <button
+              type="button"
+              data-ocid="dev_console.submit_button"
+              onClick={handleConsoleSubmit}
+              className="ml-2 text-green-700 hover:text-green-400 transition-colors"
+            >
+              [ENTER]
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

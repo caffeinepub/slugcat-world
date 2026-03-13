@@ -157,6 +157,7 @@ export interface GameState {
   prevJump: boolean;
   prevGrab: boolean;
   starvationPenalty: boolean;
+  customSprite: HTMLImageElement | null;
 }
 
 export interface ModLevel {

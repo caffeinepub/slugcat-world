@@ -1,42 +1,27 @@
 # Slugcat World
 
 ## Current State
-A Rain World-inspired 2D platformer with:
-- Slugcat player with spring-physics body chunks (3 segments) and a 6-node tapered tail with ground/air tail physics
-- Procedural head/body animation with facing-aware eyes and ear nubs
-- Batfly food enemies (flee behavior) and green lizard enemies (patrol/chase)
-- Food pip system (4 pips), karma system, shelter sleep mechanic
-- Rain timer with kill zone, spike tiles, wall sliding, pole climbing
-- 3 rooms with mod manager for custom levels
+Full-stack Rain World-inspired game with procedural slugcat animation (3-body chunks, 6-tail nodes, 4 limb nodes), lizard and batfly enemies, spears, starvation/karma mechanics, and mod manager. Slugcat is drawn procedurally on canvas with ear nubs, one eye, body segments, and tail. MainMenu has animated rain background, Start, Mod Manager, and custom level buttons.
 
 ## Requested Changes (Diff)
 
 ### Add
-- **Limb nodes**: 4 procedural leg nodes (front pair attached to upper body, back pair to hips). Each limb is a 2-node chain (thigh + foot). When grounded, feet use a stepped IK target that snaps to nearby ground level. When in air, legs dangle via spring physics. Drawn as thin limbs with slight knee bend.
-- **Spears**: Throwable weapon items. Spawned in levels. Player picks up with Z/X when near. Player carries one spear at a time; a small visual indicator shows the held spear. Press Z/X again to throw in facing direction with velocity. Thrown spear has angular rotation, physics (gravity), and sticks into walls/floors on contact. A thrown spear that hits a lizard kills it (remove lizard, remove spear).
-- **Starvation mechanic**: On sleeping, check if `player.hunger < 2` (starving threshold). If so, record `starvationPenalty = true` on GameState. On wakeup, if starvationPenalty is set, decrement karma by 1 (min 1) and display a brief "STARVING" warning on the HUD. Clear the flag after applying.
-- More lizards in rooms 1 and 2, and spear spawn positions in all 3 rooms.
+- **Developer console overlay** (toggle with backtick `` ` `` key while in-game): semi-transparent panel at the bottom of the screen showing a command history log and a text input. Supported commands: `spawn lizard` (spawns a lizard near the player), `spawn batfly`, `kill all` (removes all enemies), `food <n>` (set food pips 0-4), `karma <n>` (set karma 1-5), `help` (list commands). When console is open, keyboard input goes to the console only (not the game). Press Escape or backtick again to close.
+- **Custom slugcat sprite upload** on the MainMenu: a small "CUSTOMIZE" button or section that lets players upload a PNG/JPG image file. The image is stored in localStorage as a data URL. A thumbnail preview is shown. On game start, if a custom sprite is set, draw it as a texture overlay clipped to the slugcat's head circle. Add a "clear" button to remove the custom sprite.
+- **Slugcat face and ears**: replace current ear ellipses with proper triangular pointed cat ears (filled triangles, slightly angled outward, with an inner ear accent color). Add a second eye (both eyes should be on the forward-facing side of the head, slightly apart). Add a small nose dot below the eyes.
 
 ### Modify
-- `GameTypes.ts`: Add `limbNodes: BodyChunk[]` (4 nodes) to `Player`. Add `heldSpear: boolean` and `starving: boolean`. Add `Spear` interface. Add `spears: Spear[]` and `starvationPenalty: boolean` to `GameState`. Add `'spear'` to `ItemDef` type.
-- `Game.tsx`: Integrate limb IK into `updateBodyChunks`, spear pickup/throw logic in `updatePlayer`, lizard kill in spear collision, starvation check in the sleeping->wakeup transition. Draw limbs in `drawPlayer` (back limbs before body, front limbs after body). Draw spears in render loop.
-- `levels.ts`: Add spear ItemDefs to all 3 rooms.
+- `Game.tsx`: add dev console state (open ref + React state for rendering), separate keydown listener for backtick outside game loop, command processor function, pass custom sprite image ref to `drawPlayer`, update `drawPlayer` to accept optional sprite image and render it clipped to head. Block game inputs when console is open.
+- `MainMenu.tsx`: add customize section with file input, preview image, and clear button.
 
 ### Remove
 - Nothing removed.
 
 ## Implementation Plan
-1. Update `GameTypes.ts`: add LimbNode fields to Player, Spear interface, GameState spears/starvationPenalty fields, ItemDef spear type.
-2. Update `Game.tsx`:
-   a. `createPlayer`: initialize 4 limbNodes as BodyChunks, heldSpear=false, starving=false.
-   b. `updateBodyChunks`: compute step targets per limb based on grounded state; spring limb nodes toward targets when grounded, dangle when airborne.
-   c. `spawnItems`: handle 'spear' ItemDef → push to gs.spears.
-   d. `initGameState`: add `spears: []`, `starvationPenalty: false`.
-   e. `updatePlayer`: Z/X pressed near spear → pickup; Z/X pressed with heldSpear → throw; on wakeup transition apply starvation penalty.
-   f. `updateSpears`: physics, wall collision (stick), lizard collision (kill lizard + remove spear).
-   g. `update()`: call `updateSpears`; check starvation on sleeping->playing transition.
-   h. `drawPlayer`: render back limbs (behind body), front limbs (in front of body).
-   i. `drawSpear`: render as a thin elongated rod with rotation.
-   j. `render()`: draw spears.
-   k. `drawHUD`: show starvation warning if starving flag set briefly; show spear carry indicator.
-3. Update `levels.ts`: add spear items and extra lizards to rooms.
+1. Update `drawPlayer` in Game.tsx: replace ear ellipses with triangular pointed ears + inner ear fill, add second eye, add nose dot.
+2. Add custom sprite support: load from localStorage as HTMLImageElement in Game component (useEffect), pass as optional prop to drawPlayer, clip-draw at head position when available.
+3. Add dev console React component inside Game.tsx return JSX: bottom overlay, command history list, text input.
+4. Add backtick keydown listener in Game component (separate useEffect) to toggle console open state.
+5. In the game loop's keydown handler, block game keys when console is open.
+6. Write command executor function that operates on gsRef.current (spawn enemies, adjust stats, etc.).
+7. Update MainMenu.tsx: add file input (hidden), trigger via button, read as dataURL, save to localStorage, show thumbnail, add clear button.
